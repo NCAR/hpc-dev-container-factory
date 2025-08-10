@@ -1,0 +1,97 @@
+# SPDX-License-Identifier: Apache-2.0
+
+name: 'Free Disk Space'
+description: 'Frees disk space on the runner'
+author: 'InstructLab, modified by benkirk'
+runs:
+  using: "composite"
+  steps:
+    - name: Print disk space before cleanup
+      run: |
+        df -h
+      shell: bash
+    - name: Free Disk Space Linux
+      if: runner.os == 'Linux'
+      run: |
+        # Determine if we have Ubuntu, CentOS, or other distro as our runner OS
+        os_id=$(grep '^ID=' /etc/os-release | cut -d "=" -f2)
+        echo "Detected OS distro as: ${os_id}"
+
+        # Sometimes `docker` is not installed, so only remove images if we need to.
+        if command -v docker 2>&1 >/dev/null ; then
+          sudo docker rmi "$(docker image ls -aq) -f" >/dev/null 2>&1 || true
+        fi
+
+        probeUsage() {
+          echo "--------------------------------------------"
+          echo "${1}"
+          echo "--------------------------------------------"
+          # sudo du -hs 2>/dev/null \
+          #   /usr/*/ \
+          #   /usr/share/*/ \
+          #   /usr/local/* /usr/local/.* \
+          #   /opt/*/ \
+          #   /opt/hostedtoolcache/*/ \
+          #   /tmp \
+          #   /var/*/ \
+          #   /var/lib/*/ | grep -v "4.0K" | sort | uniq || true
+          for depth in 1; do
+            for dir in $(sudo find /opt /usr/{share,local} /var/lib -mindepth ${depth} -maxdepth ${depth} -print | sort); do
+              sudo du -hs ${dir} 2>/dev/null | egrep "M|G" || continue
+            done
+          done
+        }
+
+        # look for removal candidates
+        #probeUsage "Before Cleanup:"
+
+        printWarningMessage () {
+          echo "[warning] Failed to remove '$1', perhaps because it doesn't exist. Ignoring..."
+        }
+
+        # Remove large packages we don't use.
+        echo "Attempting to remove unused ${os_id} packages..."
+        if [[ "${os_id}" =~ "ubuntu" ]]; then
+          sudo apt-get remove -y '^mysql-.*' || printWarningMessage '^mysql-.*'
+          sudo apt-get remove -y '^dotnet-.*' --fix-missing || printWarningMessage '^dotnet-.*'
+          sudo apt-get remove -y 'php.*' --fix-missing || printWarningMessage 'php.*'
+          sudo apt-get remove -y '^mongodb-.*' --fix-missing || printWarningMessage '^mongodb-.*'
+          sudo apt-get remove -y '^llvm-.*' --fix-missing || printWarningMessage '^llvm-.*'
+          sudo apt-get remove -y google-cloud-sdk --fix-missing || printWarningMessage 'google-cloud-sdk'
+          sudo apt-get remove -y google-cloud-cli --fix-missing || printWarningMessage 'google-cloud-cli'
+          sudo apt-get autoremove -y >/dev/null 2>&1
+          sudo apt-get autoclean -y >/dev/null 2>&1
+          echo "Skipping large package cleanup for OS '${os_id}' (not implemented)."
+        fi
+
+        # Remove Android, .NET, and Haskell runtimes
+        sudo rm -rf \
+          /opt/az \
+          /opt/ghc \
+          /opt/google-cloud-sdk/ \
+          /opt/microsoft \
+          /opt/pipx \
+          /usr/lib/jvm \
+          /usr/local/.ghcup \
+          /usr/local/lib/android \
+          /usr/local/share/powershell \
+          /usr/local/julia*/ \
+          /usr/share/az*/ \
+          /usr/share/dotnet \
+          /usr/share/swift \
+          || true
+
+        # see what is left
+        #sudo find /usr /opt -name "lib*.a" -ls
+        probeUsage "After cleanup:"
+
+      shell: bash
+    - name: Free Disk Space MacOS
+      if: runner.os == 'macOS'
+      run: |
+        sudo rm -rf /System/Volumes/Data/Applications/Xcode_15*
+      shell: bash
+    - name: Print disk space after cleanup
+      run: |
+        df -h
+      shell: bash
