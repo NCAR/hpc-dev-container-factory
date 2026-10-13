@@ -1,5 +1,14 @@
 # HPC CI/CD Container Infrastructure
 
+> **Source and licence.** This is a copy of the container factory from
+> [kedziora-csg/demo_github_actions](https://github.com/kedziora-csg/demo_github_actions),
+> itself a fork of [benkirk/demo_github_actions](https://github.com/benkirk/demo_github_actions)
+> by Benjamin S. Kirk, who wrote the factory. It is distributed, as the original
+> is, under the Creative Commons Attribution-ShareAlike 4.0 International licence
+> ([LICENSE.md](LICENSE.md)). The history is kept, so the commits after the copy
+> show what has changed. Parts of this README still describe the benchmark
+> runner, which stayed behind in kedziora-csg/demo_github_actions.
+
 ## Overview
 
 This repository defines a continuous integration and continuous delivery (CI/CD) system for building, validating, and publishing containerized high-performance computing (HPC) development environments. The principal deliverables are multi-layer Docker images that combine operating systems, compiler toolchains, MPI implementations, optional GPU runtimes, and commonly used scientific libraries.
