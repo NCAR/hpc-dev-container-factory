@@ -222,6 +222,7 @@ jobs:
           esac
 
       - name: Set Image Build Environment & Tag Variables
+        id: tags
         run: |
           COMPILER_LABEL="-${{ inputs.compiler == 'os-gcc' && 'gcc' || inputs.compiler }}"
           GPU_LABEL="-${{ inputs.gpu }}"
