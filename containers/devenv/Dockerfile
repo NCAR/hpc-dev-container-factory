@@ -30,7 +30,9 @@ ARG TOOLKITS_PREREQ="miniforge"
 
 ARG IOLIBS_PREREQ="mpi"
 
-ARG FFTLIBS_PREREQ="mpi-iolibs"
+ARG BLASLIBS_PREREQ="mpi-iolibs"
+
+ARG FFTLIBS_PREREQ="blaslibs"
 
 ARG FINAL_TARGET="fftlibs"
 
@@ -1471,6 +1473,59 @@ RUN exec &> >(tee /container/logs/mpi-iolibs.log) \
     && docker-clean
 LABEL pnetcdf="${PNETCDF_VERSION}"
 LABEL pio="${PIO_VERSION}"
+
+
+
+#-------------------------------------------------------------------------------
+# OpenBLAS, DYNAMIC_ARCH: one portable build that picks its kernels from CPUID
+# when it loads -- AVX-512 (SkylakeX, Cooperlake) on Cascade Lake and Genoa, Zen
+# on Derecho -- so a portable image still delivers AVX-512 where it pays.  The
+# seam study measured exactly this build (BenchmarkRunnerPlan.md section 11,
+# item 11): 65.9 GFLOP/s a core at DGEMM on Cascade Lake, 1.74x its AVX2 kernels,
+# level with MKL on Intel and ahead of it on AMD.
+#
+#  * the SYSTEM gcc, not the image's compiler, and no -march: the library is the
+#    portable artifact, so it must not inherit MARCH_FLAGS, nvc's -tp, or any
+#    compiler's own options.  CFLAGS and friends are unset for the same reason.
+#  * TARGET is the baseline for the code that is NOT dispatched: GENERIC (plain
+#    C) on x86_64, ARMV8 on aarch64.
+#  * BLAS (and CBLAS) only -- no LAPACK, no Fortran -- and single-threaded: one
+#    MPI rank per core supplies the parallelism.  FC is still named, because
+#    OpenBLAS probes it for link flags even with NOFORTRAN=1, and nvfortran or
+#    ifx draws options it rejects.
+#  * its own stage, so FFTW and HeFFTe can be rebuilt without rebuilding it.
+#-------------------------------------------------------------------------------
+FROM ${BLASLIBS_PREREQ} AS blaslibs
+ARG OPENBLAS_VERSION="0.3.30"
+ARG OPENBLAS_URL="https://github.com/OpenMathLib/OpenBLAS/releases/download/v${OPENBLAS_VERSION}/OpenBLAS-${OPENBLAS_VERSION}.tar.gz"
+RUN exec &> >(tee /container/logs/blaslibs.log) \
+    && echo "building OpenBLAS-${OPENBLAS_VERSION} (DYNAMIC_ARCH)" \
+    && OPENBLAS_INSTALL_PATH="/container/openblas/${OPENBLAS_VERSION}" \
+    && case "$(uname -m)" in \
+         aarch64) ob_target=ARMV8 ;; \
+         *)       ob_target=GENERIC ;; \
+       esac \
+    && ob_flags="DYNAMIC_ARCH=1 TARGET=${ob_target} USE_THREAD=0 USE_OPENMP=0 NUM_THREADS=1 NO_LAPACK=1 NOFORTRAN=1" \
+    && ob_cc="CC=/usr/bin/gcc FC=/usr/bin/gfortran HOSTCC=/usr/bin/gcc" \
+    && cd /tmp && curl --retry 3 --retry-delay 5 -sSL ${OPENBLAS_URL} | tar zx \
+    && cd ./OpenBLAS-${OPENBLAS_VERSION} \
+    && env -u CFLAGS -u CXXFLAGS -u FFLAGS -u FCFLAGS -u F77FLAGS -u LDFLAGS -u CPATH -u LIBRARY_PATH \
+         make --no-print-directory --jobs ${MAKE_J_PROCS} ${ob_cc} ${ob_flags} libs shared > /tmp/openblas-make.log 2>&1 \
+         || { tail -n 200 /tmp/openblas-make.log; exit 1; } \
+    && env -u CFLAGS -u CXXFLAGS -u FFLAGS -u FCFLAGS -u F77FLAGS -u LDFLAGS -u CPATH -u LIBRARY_PATH \
+         make --no-print-directory ${ob_cc} ${ob_flags} PREFIX=${OPENBLAS_INSTALL_PATH} install \
+    && rm -f ${OPENBLAS_INSTALL_PATH}/lib/*.a \
+    && strip-binaries ${OPENBLAS_INSTALL_PATH}/lib \
+    && add_conf "\n# OpenBLAS ${OPENBLAS_VERSION} (DYNAMIC_ARCH, BLAS+CBLAS, serial)" \
+    && add_conf "export OPENBLAS_VERSION=${OPENBLAS_VERSION}" \
+    && add_conf "export OPENBLAS_ROOT=${OPENBLAS_INSTALL_PATH}" \
+    && add_conf "export CPATH=${OPENBLAS_INSTALL_PATH}/include:\${CPATH}" \
+    && add_conf "export LIBRARY_PATH=${OPENBLAS_INSTALL_PATH}/lib:\${LIBRARY_PATH}" \
+    && echo "${OPENBLAS_INSTALL_PATH}/lib" >> /etc/ld.so.conf.d/openblas.conf \
+    && ldconfig --verbose \
+    && ls -l ${OPENBLAS_INSTALL_PATH}/lib \
+    && docker-clean
+LABEL openblas="${OPENBLAS_VERSION}"
 
 
 
