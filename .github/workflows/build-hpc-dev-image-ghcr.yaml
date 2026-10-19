@@ -334,6 +334,27 @@ jobs:
             ${{ env.CI_TAG }} \
             cat /container/config_env.sh
 
+      # The promises CONTRACT.md makes, checked by a script that ships in the
+      # image (so a .sif can be checked the same way on a cluster).  OSU's app
+      # contract is added by the publish stage, so it is checked there.
+      - name: Test Image - Base Contract
+        if: ${{ inputs.test }}
+        run: |
+          docker run --rm --env-file test_env.cfg \
+            --env EXPECT_CONDA=${{ inputs.conda }} \
+            ${{ env.CI_TAG }} \
+            /container/extras/check_base_contract.sh
+
+      # Uncompressed sizes, newest layer first.  The final stage's layer should
+      # be a few MB; a recursive chown of /container makes it a quarter of the
+      # image.
+      - name: Test Image - Layer Sizes
+        if: ${{ inputs.test }}
+        run: |
+          docker image inspect --format 'total: {{.Size}} bytes' ${{ env.CI_TAG }}
+          docker history --no-trunc --format '{{.Size}}\t{{.CreatedBy}}' ${{ env.CI_TAG }} \
+            | grep -v '^0B' | cut -c1-160
+
       - name: Test Image - Placement Report
         if: ${{ inputs.test }}
         run: |
@@ -394,6 +415,14 @@ jobs:
             BASE_IMAGE=${{ env.CI_TAG }}
             DEPLOYMENT_SCRIPTS=/container/extras/build_osu-micro-benchmarks.sh
           target: final
+
+      - name: Check Published Image
+        if: ${{ inputs.publish && inputs.test }}
+        run: |
+          docker run --rm --env-file test_env.cfg \
+            --env EXPECT_CONDA=${{ inputs.conda }} \
+            ${{ env.PUBLISH_TAG }} \
+            /container/extras/check_base_contract.sh --published
 
       # - name: Run Published Image
       #   if: ${{ inputs.publish && inputs.test }}

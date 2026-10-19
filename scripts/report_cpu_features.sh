@@ -77,12 +77,15 @@ if command -v readelf >/dev/null 2>&1; then
 fi
 
 # Routines that carry a wide copy beside narrower ones and pick one from CPUID:
-# Intel's SVML (_z0 = AVX-512), libm and memcpy family, and OpenBLAS's
-# DYNAMIC_ARCH kernels, which carry the core they were built for as a suffix.
+# Intel's SVML (_z0 = AVX-512), libm and memcpy family; OpenBLAS's DYNAMIC_ARCH
+# kernels, which carry the core they were built for as a suffix; and FFTW's
+# SIMD codelets, which its planner offers only when the CPU has the ISA.  The
+# last two matter when the "binary" is the base's own libopenblas or libfftw3.
 dispatched () {
     case "$1" in
         __svml_*|__intel_*|_intel_fast_*|__libm_*) return 0 ;;
         *_SKYLAKEX|*_COOPERLAKE|*_SAPPHIRERAPIDS) return 0 ;;
+        fftw*_avx512|fftw*_avx512_*) return 0 ;;
         *_A64FX|*_NEOVERSEV1|*_NEOVERSEV2|*_ARMV8SVE) return 0 ;;
     esac
     return 1
