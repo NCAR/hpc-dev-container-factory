@@ -26,10 +26,10 @@ on:
           - aarch64
 
       conda:
-        description: "Include Conda (Miniforge)"
+        description: "Include Conda (Miniforge); adds -conda to the tag"
         type: boolean
         required: false
-        default: true
+        default: false
 
       compiler:
         description: "Compiler"
@@ -92,7 +92,6 @@ jobs:
       extra_build_args: |
         BASE_OS=${{ inputs.os }}
         COMPILER_FAMILY=${{ inputs.compiler }}
-        COMPILERS_PREREQ=${{ inputs.conda && 'miniforge' || inputs.os }}
         MPI_FAMILY=${{ inputs.mpi }}
         MPI_PREREQ=${{ inputs.cuda && 'cuda' || 'compilers' }}
         FINAL_TARGET=fftlibs

@@ -45,11 +45,13 @@ on:
         type: boolean
         default: false
 
+      # Off by default: 154 MB of every image, and nothing built on the image
+      # uses it.  On, the tags gain "-conda", so a tag still means one thing.
       conda:
         description: "Include Conda (Miniforge)"
         type: boolean
         required: false
-        default: true
+        default: false
 
       compiler:
         description: "Compiler"
@@ -224,6 +226,7 @@ jobs:
           COMPILER_LABEL="-${{ inputs.compiler == 'os-gcc' && 'gcc' || inputs.compiler }}"
           GPU_LABEL="-${{ inputs.gpu }}"
           MPI_LABEL="-${{ inputs.mpi }}"
+          CONDA_LABEL="${{ inputs.conda && '-conda' || '' }}"
 
           cat << EOF > build_inputs.txt
           arch: '${{ inputs.arch }}'
@@ -234,6 +237,7 @@ jobs:
           ${{ inputs.mpi_build_args }}
           gpu: '${{ inputs.gpu }}'
           ${{ inputs.gpu_build_args }}
+          conda: '${{ inputs.conda }}'
           ${{ inputs.extra_build_args }}
           EOF
 
@@ -251,7 +255,7 @@ jobs:
           # "NCAR", which buildx rejects as "repository name must be lowercase".
           REPO="$(printf '%s' '${{ inputs.docker_repo }}' | tr '[:upper:]' '[:lower:]')"
           PUBLISH_REPO=${REPO}-${{ inputs.arch }}
-          PUBLISH_TAG=${PUBLISH_REPO}:${{ inputs.os }}${COMPILER_LABEL}${MPI_LABEL}${GPU_LABEL}-latest
+          PUBLISH_TAG=${PUBLISH_REPO}:${{ inputs.os }}${COMPILER_LABEL}${MPI_LABEL}${GPU_LABEL}${CONDA_LABEL}-latest
           PUBLISH_TAG_YYMM=${PUBLISH_TAG//-latest/-$(date +%y.%m)}
           #PUBLISH_TAG_YYMM=${PUBLISH_TAG//-latest/-25.09}
           # Separate package for CI intermediates and the buildx registry cache,
@@ -259,7 +263,7 @@ jobs:
           # carry different visibility: hpcdev-<arch> public (Apptainer on
           # Derecho pulls it anonymously), hpcdev-<arch>-cache private.
           CI_REPO=${PUBLISH_REPO}-cache
-          CI_TAG=${CI_REPO}:${{ inputs.os }}${COMPILER_LABEL}${MPI_LABEL}${GPU_LABEL}-${INPUTS_SHA}
+          CI_TAG=${CI_REPO}:${{ inputs.os }}${COMPILER_LABEL}${MPI_LABEL}${GPU_LABEL}${CONDA_LABEL}-${INPUTS_SHA}
           CI_CACHE=${CI_TAG//-${INPUTS_SHA}/-cache}
 
           cat << EOF > tags.sh
@@ -299,6 +303,7 @@ jobs:
             BASE_OS=${{ inputs.os }}
             FINAL_TARGET=fftlibs
             MINIFORGE_PREREQ=${{ inputs.gpu == 'cuda' && 'cuda' || 'base_os' }}
+            TOOLKITS_PREREQ=${{ inputs.conda && 'miniforge' || 'no-miniforge' }}
             ${{ inputs.extra_build_args }}
             ${{ inputs.gpu_build_args }}
             ${{ inputs.compiler_build_args }}

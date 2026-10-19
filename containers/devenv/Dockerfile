@@ -10,8 +10,9 @@
 #
 #  *_PREREQ defines the prerequisite step for a stage.
 #    For example, The TOOLKITS_PREREQ could take on one of several values,
-#    'miniforge', 'cuda/rocm', or even 'base_os'.  In this way the 'toolkits'
-#    layer is dynamic and can include several (or none) packages.
+#    'miniforge' or 'no-miniforge' (conda, or not, on top of MINIFORGE_PREREQ).
+#    In this way the 'toolkits' layer is dynamic and can include several (or
+#    none) packages.
 #    Similarly, IOLIBS_PREREQ is generally 'mpi'; meaning the 'iolibs' layer
 #    will be built after MPI with full MPI support; however it could be
 #    'compilers' to build an image with no MPI support whatsoever. (rarely used)
@@ -578,10 +579,19 @@ RUN exec &> >(tee /container/logs/miniforge.log) \
     && conda clean --all --force-pkgs-dirs --yes --verbose \
     && docker-clean
 
+#-------------------------------------------------------------------------------
+# no-miniforge: the same prerequisite, without conda.
+#  TOOLKITS_PREREQ=no-miniforge leaves Miniforge out -- 154 MB of every image,
+#  which nothing built on the image uses.  The build workflow chooses between
+#  the two from its `conda` input, and keeps MINIFORGE_PREREQ (cuda, rocm or
+#  base_os) either way, so a GPU image without conda still has its runtime.
+FROM ${MINIFORGE_PREREQ} AS no-miniforge
+#-------------------------------------------------------------------------------
+
 
 
 #-------------------------------------------------------------------------------
-# TOOLKITS_PREREQ could be miniforge, cuda/rocm, or even base_os
+# TOOLKITS_PREREQ could be miniforge or no-miniforge (or cuda/rocm, or base_os)
 FROM ${TOOLKITS_PREREQ} AS toolkits
 RUN echo "Setting the third-party toolkits layer"
 #-------------------------------------------------------------------------------
