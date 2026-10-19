@@ -1532,6 +1532,20 @@ LABEL openblas="${OPENBLAS_VERSION}"
 #-------------------------------------------------------------------------------
 # FFTW & HEFFTE (with MPI support)
 #  (sufficient to build MuRAM)
+#
+# FFTW is built with its SIMD codelets -- SSE2, AVX, AVX2 and AVX-512 on x86_64,
+# NEON on aarch64.  FFTW chooses among them from CPUID at run time, so this is
+# safe in a portable image: on a host without AVX-512 the AVX-512 codelets are
+# never offered to the planner (on Derecho the AVX-512 build fell back to AVX2
+# and ran exactly as fast).  Only the codelet directories get -mavx2 and the
+# like; the rest of the library is compiled as before.  Without these flags its
+# codelets were scalar.
+#
+# nvhpc builds FFTW with the system gcc.  FFTW's configure knows the SIMD flags
+# of gcc, icc and clang only (icx and aocc count as clang), and nvc is none of
+# them.  The library's interface is C, so it links into nvc and nvfortran code
+# as it does into gcc's; the MPI and Fortran parts still use MPICC and F77.
+#-------------------------------------------------------------------------------
 FROM ${FFTLIBS_PREREQ} AS fftlibs
 #-------------------------------------------------------------------------------
 ARG FFTW_VERSION="3.3.10"
@@ -1540,26 +1554,44 @@ RUN exec &> >(tee /container/logs/fftlibs.log) \
     && echo "building fftw-${FFTW_VERSION}" \
     && env \
     && FFTW_INSTALL_PATH="/container/fftw/${FFTW_VERSION}" \
+    && case "$(uname -m)" in \
+         x86_64)  fftw_simd="--enable-sse2 --enable-avx --enable-avx2 --enable-avx512" \
+                  fftw_have="HAVE_SSE2 HAVE_AVX HAVE_AVX2 HAVE_AVX512" ;; \
+         aarch64) fftw_simd="--enable-neon" \
+                  fftw_have="HAVE_NEON" ;; \
+         *)       fftw_simd="" fftw_have="" ;; \
+       esac \
+    && case "${COMPILER_FAMILY}" in \
+         nvhpc) fftw_cc="/usr/bin/gcc" fftw_cflags="-O3 -fPIC" ;; \
+         *)     fftw_cc="${CC}"        fftw_cflags="-O3 ${CFLAGS}" ;; \
+       esac \
+    && echo "FFTW SIMD: ${fftw_simd:-<none>}, CC=${fftw_cc}, CFLAGS=${fftw_cflags}" \
     && cd /tmp && curl --retry 3 --retry-delay 5 -sSL ftp://fftw.org/pub/fftw/fftw-${FFTW_VERSION}.tar.gz | tar zx \
     && cd ./fftw-${FFTW_VERSION} \
     && ./configure --help \
     && (./configure \
-            CFLAGS="-O3 ${CFLAGS}" \
+            CC="${fftw_cc}" CFLAGS="${fftw_cflags}" \
             --prefix=${FFTW_INSTALL_PATH} \
             --disable-static --enable-shared --enable-float \
-            --enable-mpi --enable-threads \
+            --enable-mpi --enable-threads ${fftw_simd} \
             --disable-dependency-tracking \
             || cat config.log) \
+    && for d in ${fftw_have}; do \
+         grep -q "define ${d} 1" config.h || { echo "FFTW (float) configured without ${d}"; exit 1; }; \
+       done \
     && make --no-print-directory --jobs ${MAKE_J_PROCS} V=0 \
     && make --no-print-directory --silent install-strip \
     && make --no-print-directory distclean \
     && (./configure \
-            CFLAGS="-O3 ${CFLAGS}" \
+            CC="${fftw_cc}" CFLAGS="${fftw_cflags}" \
             --prefix=${FFTW_INSTALL_PATH} \
             --disable-static --enable-shared \
-            --enable-mpi --enable-threads \
+            --enable-mpi --enable-threads ${fftw_simd} \
             --disable-dependency-tracking \
             || cat config.log) \
+    && for d in ${fftw_have}; do \
+         grep -q "define ${d} 1" config.h || { echo "FFTW (double) configured without ${d}"; exit 1; }; \
+       done \
     && make --no-print-directory --jobs ${MAKE_J_PROCS} V=0 \
     && make --no-print-directory --silent install-strip \
     && add_conf "\n# FFTW ${FFTW_VERSION}" \
