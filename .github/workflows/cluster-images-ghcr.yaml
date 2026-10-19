@@ -1,0 +1,137 @@
+name: Build the Clusters' Image Set (GHCR)
+
+#-------------------------------------------------------------------------------
+# The portable images the NCAR clusters run, in one dispatch:
+#
+#     <os> x {oneapi, gcc14, nvhpc} x {mpich, openmpi}  = 6 images, in parallel
+#
+#   leap    -- the default: openSUSE Leap 15 is built from the same SLE 15
+#              sources as Derecho's and Casper's host OS.
+#   oneapi  -- the site default compiler family.
+#   gcc14   -- gcc 14.3.0 from source, matching the clusters' gcc/14.3.0 module
+#              (NOT `gcc`, which is the distribution's own).
+#   nvhpc   -- the third compiler family NCAR provides modules for.
+#   mpich   -- the family a Cray MPICH ABI shim can displace at run time.
+#   openmpi -- the alternative, and the only family Casper can host.
+#
+# Portable: no MARCH_FLAGS, except nvhpc's -tp=x86-64-v3, because nvc has no
+# portable default (it targets the build runner's CPU).  Tuning belongs to the
+# app images built on these (CONTRACT.md).
+#
+# Also the quickest way to validate a change to the factory against the three
+# compiler families that matter: dispatch it from the branch with publish off,
+# and the six build and test at once.
+#
+# The axes and their include: entries are defined together, so every include
+# names a value on its axis and merges (CLAUDE.md, "Matrix gotcha").  Versions
+# MIRROR matrix-build-images-ghcr.yaml, the authoritative source; keep them in
+# sync when bumping.
+#-------------------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "Base OS (leap matches the NCAR clusters' SLE 15 hosts)"
+        type: choice
+        required: true
+        default: leap
+        options:
+          - leap
+          - almalinux9
+          - noble
+
+      # Blank = ghcr.io/<this repo's owner>/hpcdev, resolved below (dispatch
+      # input defaults are literal, so ${{ }} cannot be used here).
+      docker_repo:
+        description: "Container repository (blank = ghcr.io/<this repo's owner>/hpcdev)"
+        type: string
+        required: false
+        default: ""
+
+      test:
+        description: "Test Image"
+        type: boolean
+        required: false
+        default: true
+
+      publish:
+        description: "Publish Image (off: build and test only, e.g. from a branch)"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-cluster-set:
+    name: Build
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        compiler: [oneapi, gcc14, nvhpc]
+        mpi: [mpich, openmpi]
+
+        include:
+          - compiler: oneapi
+            compiler_build_args: |
+              COMPILER_FAMILY=oneapi
+              ONEAPI_VERSION=2026.1.0
+              ONEAPI_CC_URL=https://registrationcenter-download.intel.com/akdlm/IRC_NAS/eb43fd3f-7cff-46a4-ab14-a2d3b60c4899/intel-dpcpp-cpp-compiler-2026.1.0.118_offline.sh
+              ONEAPI_FC_URL=https://registrationcenter-download.intel.com/akdlm/IRC_NAS/87bd1c07-e474-4f38-9492-e44e15ea7a52/intel-fortran-compiler-2026.1.0.104_offline.sh
+
+          - compiler: gcc14
+            compiler_build_args: |
+              COMPILER_FAMILY=gcc
+              GCC_VERSION=14.3.0
+
+          - compiler: nvhpc
+            compiler_build_args: |
+              COMPILER_FAMILY=nvhpc
+              MARCH_FLAGS=-tp=x86-64-v3
+              NVHPC_VERSION=26.5
+              NVHPC_URL=https://developer.download.nvidia.com/hpc-sdk/26.5/nvhpc_2026_265_Linux_x86_64_cuda_multi.tar.gz
+
+          - mpi: openmpi
+            mpi_build_args: |
+              MPI_FAMILY=openmpi
+              OPENMPI_VERSION=5.0.10
+
+          - mpi: mpich
+            mpi_build_args: |
+              MPI_FAMILY=mpich
+              MPICH_VERSION=5.0.1
+
+    uses: ./.github/workflows/build-hpc-dev-image-ghcr.yaml
+    with:
+      docker_repo: ${{ inputs.docker_repo != '' && inputs.docker_repo
+                       || format('ghcr.io/{0}/hpcdev', github.repository_owner) }}
+      os: ${{ inputs.os }}
+      # The clusters' CPU nodes are x86_64 and this set is CPU-only.
+      arch: x86_64
+      runner: ubuntu-latest
+      free_runner_space: true
+      conda: false
+      gpu: nogpu
+      compiler: ${{ matrix.compiler }}
+      compiler_build_args: ${{ matrix.compiler_build_args }}
+      mpi: ${{ matrix.mpi }}
+      mpi_build_args: ${{ matrix.mpi_build_args }}
+      test: ${{ inputs.test }}
+      publish: ${{ inputs.publish }}
+      extra_build_args: |
+        HDF5_VERSION=1.14.5
+        HDF5_URL=https://github.com/HDFGroup/hdf5/releases/download/hdf5_1.14.5/hdf5-1.14.5.tar.gz
+        NETCDF_C_VERSION=4.10.0
+        NETCDF_FORTRAN_VERSION=4.6.3
+        PNETCDF_VERSION=1.14.1
+        PIO_VERSION=2.6.7
+        PIO_TAG=pio2_6_7
+        FFTW_VERSION=3.3.10
+        HEFFTE_VERSION=2.4.1
+
+    secrets:
+      registry_token: ${{ secrets.GITHUB_TOKEN }}

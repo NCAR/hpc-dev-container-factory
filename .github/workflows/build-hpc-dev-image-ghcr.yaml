@@ -246,7 +246,11 @@ jobs:
               GPU_LABEL=
           fi
 
-          PUBLISH_REPO=${{ inputs.docker_repo }}-${{ inputs.arch }}
+          # Lower-cased: an image reference must be, and the default is built
+          # from github.repository_owner, which keeps the owner's own case --
+          # "NCAR", which buildx rejects as "repository name must be lowercase".
+          REPO="$(printf '%s' '${{ inputs.docker_repo }}' | tr '[:upper:]' '[:lower:]')"
+          PUBLISH_REPO=${REPO}-${{ inputs.arch }}
           PUBLISH_TAG=${PUBLISH_REPO}:${{ inputs.os }}${COMPILER_LABEL}${MPI_LABEL}${GPU_LABEL}-latest
           PUBLISH_TAG_YYMM=${PUBLISH_TAG//-latest/-$(date +%y.%m)}
           #PUBLISH_TAG_YYMM=${PUBLISH_TAG//-latest/-25.09}
