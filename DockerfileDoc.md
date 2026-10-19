@@ -261,7 +261,9 @@ The final stage performs final image assembly tasks, including:
 - generating `MANPATH`,
 - adding a build-completion timestamp,
 - creating the `plainuser` user,
-- changing ownership of `/container`,
+- giving `plainuser` ownership of `/container` itself, `config_env.sh` and
+  `logs/` -- deliberately not the whole tree, which would store a second copy
+  of every file in the final layer,
 - printing the final `/container/config_env.sh`.
 
 The final image entrypoint is:

@@ -1569,6 +1569,17 @@ LABEL heffte="${HEFFTE_VERSION}"
 #  remove duplicates from the front of the LD_LIBRARY_PATH
 #  handle MANPATH all at once
 ################################################################################
+#
+#  plainuser owns /container itself, config_env.sh and logs/ -- NOT the tree.
+#  `chown -R plainuser: /container/` rewrote the metadata of every file under
+#  /container, and in a layered image that stores a second copy of each one in
+#  this final layer: 27-47% of every image, 3.8 GB of an nvhpc one, carried by
+#  the registry, every runner's disk and every .sif build's download.  Nothing
+#  runs as plainuser by default (the image stays root, see USER below), and
+#  plainuser has passwordless sudo, so the tree's ownership bought nothing.
+#  What it may want to do without sudo -- add a directory under /container,
+#  append to config_env.sh, write a log -- the three entries it owns cover.
+################################################################################
 FROM ${FINAL_TARGET} AS final
 COPY extras/ /container/extras/
 RUN exec &> >(tee /container/logs/final.log) \
@@ -1582,7 +1593,7 @@ RUN exec &> >(tee /container/logs/final.log) \
          || echo "no mpicxx in this image; skipping report_placement" ) \
     && useradd plainuser -d /home/plainuser \
     && echo "plainuser 	ALL=(ALL)	NOPASSWD: ALL" >> /etc/sudoers \
-    && chown -R plainuser: /container/ \
+    && chown plainuser: /container/ /container/config_env.sh /container/logs/ \
     && cat /container/config_env.sh
 
 # ref: https://spack.readthedocs.io/en/latest/containers.html
