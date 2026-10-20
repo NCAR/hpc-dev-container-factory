@@ -1484,7 +1484,9 @@ LABEL openblas="${OPENBLAS_VERSION}"
 # them.  The library's interface is C, so it links into nvc and nvfortran code
 # as it does into gcc's.  The MPI part is still compiled by MPICC, i.e. nvc, and
 # with the gcc CFLAGS it would get no -tp and target the BUILD runner's CPU, so
-# MARCH_FLAGS (-tp=...) goes on MPICC itself, where gcc never sees it.
+# MPICC becomes a one-line wrapper that adds MARCH_FLAGS (-tp=...).  It must be a
+# script, not MPICC="mpicc -tp=...": libtool links the shared library with ITS
+# compiler, gcc, and hands gcc every word after MPICC's first as a flag.
 #-------------------------------------------------------------------------------
 FROM ${FFTLIBS_PREREQ} AS fftlibs
 #-------------------------------------------------------------------------------
@@ -1502,7 +1504,9 @@ RUN exec &> >(tee /container/logs/fftlibs.log) \
          *)       fftw_simd="" fftw_have="" ;; \
        esac \
     && case "${COMPILER_FAMILY}" in \
-         nvhpc) fftw_cc="/usr/bin/gcc" fftw_cflags="-O3 -fPIC" fftw_mpicc="${MPICC} ${MARCH_FLAGS}" ;; \
+         nvhpc) fftw_cc="/usr/bin/gcc" fftw_cflags="-O3 -fPIC" fftw_mpicc="/tmp/fftw-mpicc" \
+                && printf '#!/bin/sh\nexec %s %s "$@"\n' "${MPICC}" "${MARCH_FLAGS}" > /tmp/fftw-mpicc \
+                && chmod +x /tmp/fftw-mpicc && cat /tmp/fftw-mpicc ;; \
          *)     fftw_cc="${CC}"        fftw_cflags="-O3 ${CFLAGS}" fftw_mpicc="${MPICC}" ;; \
        esac \
     && echo "FFTW SIMD: ${fftw_simd:-<none>}, CC=${fftw_cc}, MPICC=${fftw_mpicc}, CFLAGS=${fftw_cflags}" \

@@ -178,6 +178,22 @@ if [ -n "${FFTW_ROOT:-}" ] && [ -d "${FFTW_ROOT}" ]; then
             fail "libfftw3${prec}: no${missing} codelets -- configured without its SIMD flags?"
         fi
     done
+    # The MPI libraries have no SIMD codelets, so any wide instruction in them
+    # means the compiler targeted the build runner's CPU (nvc does, without
+    # -tp).  It shows only when that runner had the ISA; the gcc-built serial
+    # libraries are not checked this way, as their dispatched codelets are
+    # stripped of the names that would set them apart.
+    for prec in "" f; do
+        mlib="$(readlink -f "$(ls -d "${FFTW_ROOT}"/lib*/libfftw3${prec}_mpi.so 2>/dev/null | head -1)" 2>/dev/null)"
+        if [ ! -f "${mlib}" ]; then
+            fail "no libfftw3${prec}_mpi.so under ${FFTW_ROOT}"
+        elif [ -x /container/bin/report_cpu_features ] \
+             && /container/bin/report_cpu_features "${mlib}" 2>/dev/null | grep -q ' required: YES'; then
+            fail "libfftw3${prec}_mpi needs $(/container/bin/report_cpu_features "${mlib}" | sed -n 's/^ *\(.*\) required: YES.*/\1/p') -- built for the build runner's CPU, not portably"
+        else
+            pass "libfftw3${prec}_mpi: no instructions beyond the portable target"
+        fi
+    done
     cat > "${work}/fft.c" <<'EOF'
 #include <stdio.h>
 #include <fftw3.h>
