@@ -983,7 +983,9 @@ FROM compilers AS mpich3
 #    mpich-3.4.3 and nvfortran misunderstand each other regarding real*16, avoid false positive.
 #    so we take the rather drastic step of modifying configure.ac to prevent building the f08 interface,
 #    no matter what configure *thinks* it finds...
-#    does not fPIC by default, so add here.
+#    does not fPIC by default, so add here.  NOT ${MARCH_FLAGS}: for nvhpc it is nvc's
+#    -tp=..., which gcc rejects.  The library is built portably by gcc either way;
+#    apps built through the wrappers pass MARCH_FLAGS themselves.
 #   CLANG:
 #    ditto f08 interface
 #   GCC:
@@ -1009,10 +1011,10 @@ RUN exec &> >(tee /container/logs/mpich.log) \
             sed -i 's/f08_works=yes/f08_works=no/g' configure \
             && export CC="/usr/bin/gcc" \
             && export CXX="/usr/bin/g++" \
-            && export CXXFLAGS="-fPIC ${MARCH_FLAGS}" \
-            && export CFLAGS="-fPIC ${MARCH_FLAGS}" \
-            && export FFLAGS="-fPIC ${MARCH_FLAGS}" \
-            && export FCFLAGS="-fPIC ${MARCH_FLAGS}" \
+            && export CXXFLAGS="-fPIC" \
+            && export CFLAGS="-fPIC" \
+            && export FFLAGS="-fPIC" \
+            && export FCFLAGS="-fPIC" \
             ;; \
         "clang") \
             sed -i 's/f08_works=yes/f08_works=no/g' configure \
@@ -1424,7 +1426,9 @@ LABEL pio="${PIO_VERSION}"
 #  * TARGET is the baseline for the code that is NOT dispatched: GENERIC (plain
 #    C) on x86_64, ARMV8 on aarch64.
 #  * BLAS (and CBLAS) only -- no LAPACK, no Fortran -- and single-threaded: one
-#    MPI rank per core supplies the parallelism.  FC is still named, because
+#    MPI rank per core supplies the parallelism.  USE_LOCKING=1 still makes it
+#    safe to call from several threads at once (an OpenMP app's threads), which
+#    a USE_THREAD=0 build otherwise is not: its buffer allocation is unlocked.  FC is still named, because
 #    OpenBLAS probes it for link flags even with NOFORTRAN=1, and nvfortran or
 #    ifx draws options it rejects.
 #  * its own stage, so FFTW and HeFFTe can be rebuilt without rebuilding it.
@@ -1439,7 +1443,7 @@ RUN exec &> >(tee /container/logs/blaslibs.log) \
          aarch64) ob_target=ARMV8 ;; \
          *)       ob_target=GENERIC ;; \
        esac \
-    && ob_flags="DYNAMIC_ARCH=1 TARGET=${ob_target} USE_THREAD=0 USE_OPENMP=0 NUM_THREADS=1 NO_LAPACK=1 NOFORTRAN=1" \
+    && ob_flags="DYNAMIC_ARCH=1 TARGET=${ob_target} USE_THREAD=0 USE_OPENMP=0 USE_LOCKING=1 NUM_THREADS=1 NO_LAPACK=1 NOFORTRAN=1" \
     && ob_cc="CC=/usr/bin/gcc FC=/usr/bin/gfortran HOSTCC=/usr/bin/gcc" \
     && cd /tmp && curl --retry 3 --retry-delay 5 -sSL ${OPENBLAS_URL} | tar zx \
     && cd ./OpenBLAS-${OPENBLAS_VERSION} \
@@ -1478,7 +1482,9 @@ LABEL openblas="${OPENBLAS_VERSION}"
 # nvhpc builds FFTW with the system gcc.  FFTW's configure knows the SIMD flags
 # of gcc, icc and clang only (icx and aocc count as clang), and nvc is none of
 # them.  The library's interface is C, so it links into nvc and nvfortran code
-# as it does into gcc's; the MPI and Fortran parts still use MPICC and F77.
+# as it does into gcc's.  The MPI part is still compiled by MPICC, i.e. nvc, and
+# with the gcc CFLAGS it would get no -tp and target the BUILD runner's CPU, so
+# MARCH_FLAGS (-tp=...) goes on MPICC itself, where gcc never sees it.
 #-------------------------------------------------------------------------------
 FROM ${FFTLIBS_PREREQ} AS fftlibs
 #-------------------------------------------------------------------------------
@@ -1496,15 +1502,15 @@ RUN exec &> >(tee /container/logs/fftlibs.log) \
          *)       fftw_simd="" fftw_have="" ;; \
        esac \
     && case "${COMPILER_FAMILY}" in \
-         nvhpc) fftw_cc="/usr/bin/gcc" fftw_cflags="-O3 -fPIC" ;; \
-         *)     fftw_cc="${CC}"        fftw_cflags="-O3 ${CFLAGS}" ;; \
+         nvhpc) fftw_cc="/usr/bin/gcc" fftw_cflags="-O3 -fPIC" fftw_mpicc="${MPICC} ${MARCH_FLAGS}" ;; \
+         *)     fftw_cc="${CC}"        fftw_cflags="-O3 ${CFLAGS}" fftw_mpicc="${MPICC}" ;; \
        esac \
-    && echo "FFTW SIMD: ${fftw_simd:-<none>}, CC=${fftw_cc}, CFLAGS=${fftw_cflags}" \
+    && echo "FFTW SIMD: ${fftw_simd:-<none>}, CC=${fftw_cc}, MPICC=${fftw_mpicc}, CFLAGS=${fftw_cflags}" \
     && cd /tmp && curl --retry 3 --retry-delay 5 -sSL ftp://fftw.org/pub/fftw/fftw-${FFTW_VERSION}.tar.gz | tar zx \
     && cd ./fftw-${FFTW_VERSION} \
     && ./configure --help \
     && (./configure \
-            CC="${fftw_cc}" CFLAGS="${fftw_cflags}" \
+            CC="${fftw_cc}" MPICC="${fftw_mpicc}" CFLAGS="${fftw_cflags}" \
             --prefix=${FFTW_INSTALL_PATH} \
             --disable-static --enable-shared --enable-float \
             --enable-mpi --enable-threads ${fftw_simd} \
@@ -1517,7 +1523,7 @@ RUN exec &> >(tee /container/logs/fftlibs.log) \
     && make --no-print-directory --silent install-strip \
     && make --no-print-directory distclean \
     && (./configure \
-            CC="${fftw_cc}" CFLAGS="${fftw_cflags}" \
+            CC="${fftw_cc}" MPICC="${fftw_mpicc}" CFLAGS="${fftw_cflags}" \
             --prefix=${FFTW_INSTALL_PATH} \
             --disable-static --enable-shared \
             --enable-mpi --enable-threads ${fftw_simd} \

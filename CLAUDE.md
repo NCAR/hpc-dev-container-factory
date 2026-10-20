@@ -198,7 +198,10 @@ them with one `cluster-images-ghcr` dispatch rather than a build per change.
   their wording. "AVX-512 (zmm) used by binary" is "is any `%zmm` named", which a oneAPI
   binary answers yes for whenever it links Intel's run-time-dispatched SVML
   (`__svml_*_z0`); "AVX-512 required" excludes the routines known to dispatch, and is the
-  one that says whether the binary can SIGILL. Its "x86 ISA needed" note is only as good
+  one that says whether the binary can SIGILL. It also counts EVEX code on `%xmm`/`%ymm`
+  (AVX-512VL: a `%k` mask, `%ymm16-31`, `{1toN}`, or an AVX-512-only mnemonic such as
+  `vpternlogd`), because gcc's AVX-512 targets prefer 256-bit vectors and so can need
+  AVX-512 without naming a `%zmm`. Its "x86 ISA needed" note is only as good
   as gcc's: a real level is written only with `-mneeded`, so a `-march=znver3` build still
   reads `x86-64-baseline`. Count `%ymm`/`vfmadd` in `objdump -d` to see what a gcc binary
   actually uses.

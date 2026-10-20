@@ -83,7 +83,7 @@ involved.
   | `  ISA flags: ...` | the x86_64 host's SIMD flags |
   | `  SIMD: ...` | the aarch64 host's |
   | `  AVX-512 (zmm) used by binary: YES\|no` | an AVX-512 register is named anywhere in the binary |
-  | `  AVX-512 required: YES\|no ...` | named outside routines that dispatch at run time (Intel's SVML, OpenBLAS's and FFTW's kernels): **the binary needs an AVX-512 host** |
+  | `  AVX-512 required: YES\|no ...` | an AVX-512 instruction -- on `%zmm`, or EVEX on `%xmm`/`%ymm` (AVX-512VL) -- outside routines that dispatch at run time (Intel's SVML, OpenBLAS's and FFTW's kernels): **YES means the binary needs an AVX-512 host**. Found by register, mask, broadcast and AVX-512-only mnemonic, so `no` means none was found, not a proof |
   | `  SVE (z-regs) used by binary: ...`, `  SVE required: ...` | the same, for SVE on aarch64 |
 
   The functions behind the answer are listed between those lines. An "ISA
