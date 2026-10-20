@@ -346,14 +346,16 @@ jobs:
             ${{ env.CI_TAG }} \
             /container/extras/check_base_contract.sh
 
-      # Uncompressed sizes, newest layer first.  The final stage's layer should
-      # be a few MB; a recursive chown of /container makes it a quarter of the
-      # image.
+      # UNCOMPRESSED sizes, newest layer first (the registry stores roughly a
+      # third of these).  The final stage's layer -- the first RUN line -- should
+      # be well under 1 MB; a recursive chown of /container makes it a quarter of
+      # the image.  {{json}} keeps each layer on one line: a RUN with heredocs
+      # has newlines in its command.
       - name: Test Image - Layer Sizes
         if: ${{ inputs.test }}
         run: |
-          docker image inspect --format 'total: {{.Size}} bytes' ${{ env.CI_TAG }}
-          docker history --no-trunc --format '{{.Size}}\t{{.CreatedBy}}' ${{ env.CI_TAG }} \
+          docker image inspect --format 'total: {{.Size}} bytes, uncompressed' ${{ env.CI_TAG }}
+          docker history --no-trunc --format '{{.Size}}\t{{json .CreatedBy}}' ${{ env.CI_TAG }} \
             | grep -v '^0B' | cut -c1-160
 
       - name: Test Image - Placement Report
