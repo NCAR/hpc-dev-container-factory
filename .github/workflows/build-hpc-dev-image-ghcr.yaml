@@ -45,11 +45,13 @@ on:
         type: boolean
         default: false
 
+      # Off by default: 154 MB of every image, and nothing built on the image
+      # uses it.  On, the tags gain "-conda", so a tag still means one thing.
       conda:
         description: "Include Conda (Miniforge)"
         type: boolean
         required: false
-        default: true
+        default: false
 
       compiler:
         description: "Compiler"
@@ -220,10 +222,12 @@ jobs:
           esac
 
       - name: Set Image Build Environment & Tag Variables
+        id: tags
         run: |
           COMPILER_LABEL="-${{ inputs.compiler == 'os-gcc' && 'gcc' || inputs.compiler }}"
           GPU_LABEL="-${{ inputs.gpu }}"
           MPI_LABEL="-${{ inputs.mpi }}"
+          CONDA_LABEL="${{ inputs.conda && '-conda' || '' }}"
 
           cat << EOF > build_inputs.txt
           arch: '${{ inputs.arch }}'
@@ -234,6 +238,7 @@ jobs:
           ${{ inputs.mpi_build_args }}
           gpu: '${{ inputs.gpu }}'
           ${{ inputs.gpu_build_args }}
+          conda: '${{ inputs.conda }}'
           ${{ inputs.extra_build_args }}
           EOF
 
@@ -251,7 +256,7 @@ jobs:
           # "NCAR", which buildx rejects as "repository name must be lowercase".
           REPO="$(printf '%s' '${{ inputs.docker_repo }}' | tr '[:upper:]' '[:lower:]')"
           PUBLISH_REPO=${REPO}-${{ inputs.arch }}
-          PUBLISH_TAG=${PUBLISH_REPO}:${{ inputs.os }}${COMPILER_LABEL}${MPI_LABEL}${GPU_LABEL}-latest
+          PUBLISH_TAG=${PUBLISH_REPO}:${{ inputs.os }}${COMPILER_LABEL}${MPI_LABEL}${GPU_LABEL}${CONDA_LABEL}-latest
           PUBLISH_TAG_YYMM=${PUBLISH_TAG//-latest/-$(date +%y.%m)}
           #PUBLISH_TAG_YYMM=${PUBLISH_TAG//-latest/-25.09}
           # Separate package for CI intermediates and the buildx registry cache,
@@ -259,7 +264,7 @@ jobs:
           # carry different visibility: hpcdev-<arch> public (Apptainer on
           # Derecho pulls it anonymously), hpcdev-<arch>-cache private.
           CI_REPO=${PUBLISH_REPO}-cache
-          CI_TAG=${CI_REPO}:${{ inputs.os }}${COMPILER_LABEL}${MPI_LABEL}${GPU_LABEL}-${INPUTS_SHA}
+          CI_TAG=${CI_REPO}:${{ inputs.os }}${COMPILER_LABEL}${MPI_LABEL}${GPU_LABEL}${CONDA_LABEL}-${INPUTS_SHA}
           CI_CACHE=${CI_TAG//-${INPUTS_SHA}/-cache}
 
           cat << EOF > tags.sh
@@ -299,6 +304,7 @@ jobs:
             BASE_OS=${{ inputs.os }}
             FINAL_TARGET=fftlibs
             MINIFORGE_PREREQ=${{ inputs.gpu == 'cuda' && 'cuda' || 'base_os' }}
+            TOOLKITS_PREREQ=${{ inputs.conda && 'miniforge' || 'no-miniforge' }}
             ${{ inputs.extra_build_args }}
             ${{ inputs.gpu_build_args }}
             ${{ inputs.compiler_build_args }}
@@ -328,6 +334,29 @@ jobs:
           docker run --rm --env-file test_env.cfg \
             ${{ env.CI_TAG }} \
             cat /container/config_env.sh
+
+      # The promises CONTRACT.md makes, checked by a script that ships in the
+      # image (so a .sif can be checked the same way on a cluster).  OSU's app
+      # contract is added by the publish stage, so it is checked there.
+      - name: Test Image - Base Contract
+        if: ${{ inputs.test }}
+        run: |
+          docker run --rm --env-file test_env.cfg \
+            --env EXPECT_CONDA=${{ inputs.conda }} \
+            ${{ env.CI_TAG }} \
+            /container/extras/check_base_contract.sh
+
+      # UNCOMPRESSED sizes, newest layer first (the registry stores roughly a
+      # third of these).  The final stage's layer -- the first RUN line -- should
+      # be well under 1 MB; a recursive chown of /container makes it a quarter of
+      # the image.  {{json}} keeps each layer on one line: a RUN with heredocs
+      # has newlines in its command.
+      - name: Test Image - Layer Sizes
+        if: ${{ inputs.test }}
+        run: |
+          docker image inspect --format 'total: {{.Size}} bytes, uncompressed' ${{ env.CI_TAG }}
+          docker history --no-trunc --format '{{.Size}}\t{{json .CreatedBy}}' ${{ env.CI_TAG }} \
+            | grep -v '^0B' | cut -c1-160
 
       - name: Test Image - Placement Report
         if: ${{ inputs.test }}
@@ -389,6 +418,14 @@ jobs:
             BASE_IMAGE=${{ env.CI_TAG }}
             DEPLOYMENT_SCRIPTS=/container/extras/build_osu-micro-benchmarks.sh
           target: final
+
+      - name: Check Published Image
+        if: ${{ inputs.publish && inputs.test }}
+        run: |
+          docker run --rm --env-file test_env.cfg \
+            --env EXPECT_CONDA=${{ inputs.conda }} \
+            ${{ env.PUBLISH_TAG }} \
+            /container/extras/check_base_contract.sh --published
 
       # - name: Run Published Image
       #   if: ${{ inputs.publish && inputs.test }}

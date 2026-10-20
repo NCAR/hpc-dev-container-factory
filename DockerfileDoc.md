@@ -17,11 +17,12 @@ graph. Docker build arguments select:
 - the compiler family,
 - the MPI implementation,
 - the scientific I/O libraries,
-- the FFT libraries,
+- the BLAS and FFT libraries,
 - and the final stage used to produce the exported image.
 
 The resulting image provides a complete HPC software stack containing development tools,
-compilers, MPI, Python tooling, HDF5, NetCDF, PnetCDF, ParallelIO, FFTW, HeFFTe, and helper
+compilers, MPI, optionally Python tooling, HDF5, NetCDF, PnetCDF, ParallelIO, OpenBLAS, FFTW,
+HeFFTe, and helper
 scripts used by CI and downstream containers.
 
 The final image is selected with:
@@ -50,11 +51,12 @@ Important selector arguments include:
 |---|---|
 | `BASE_OS` | Selects the Linux distribution base image. |
 | `MINIFORGE_PREREQ` | Selects the stage on which Miniforge is installed. |
-| `TOOLKITS_PREREQ` | Selects the stage on which general build tools are installed. |
+| `TOOLKITS_PREREQ` | `miniforge` or `no-miniforge`: whether the image carries conda. |
 | `COMPILER_FAMILY` | Selects the compiler stage, such as `os-gcc`, `gcc`, `oneapi`, `aocc`, `nvhpc`, or `clang`. |
 | `MPI_FAMILY` | Selects the MPI implementation, such as `openmpi`, `mpich`, or `mpich3`. |
 | `IOLIBS_PREREQ` | Selects the prerequisite stage for serial scientific I/O libraries. |
-| `FFTLIBS_PREREQ` | Selects the prerequisite stage for FFT-related libraries. |
+| `BLASLIBS_PREREQ` | Selects the prerequisite stage for OpenBLAS (default `mpi-iolibs`). |
+| `FFTLIBS_PREREQ` | Selects the prerequisite stage for FFT-related libraries (default `blaslibs`). |
 | `FINAL_TARGET` | Selects the stage used as the base for the final exported image. |
 
 These arguments are build-time parameters, not automatically persistent runtime environment
@@ -78,7 +80,8 @@ Representative responsibilities include:
 - installing system GCC and related compiler tools,
 - installing CMake, Autotools, Git, Python, compression libraries, and documentation tools,
 - creating `/container/bin`, `/container/logs`, and `/container/extras`,
-- creating helper scripts such as `docker-clean`, `add_conf`, and `report_cpu_features`.
+- creating helper scripts such as `docker-clean` and `add_conf` (`report_cpu_features` is
+  installed by the final stage, so changing it rebuilds one layer, not all of them).
 
 This stage also initializes:
 
@@ -127,6 +130,11 @@ MINIFORGE_PREREQ=cuda
 
 means Miniforge is installed on top of the CUDA-enabled image stage.
 
+Miniforge is optional, and off by default. `no-miniforge` is the same
+prerequisite without it, and the build workflow chooses between the two with
+`TOOLKITS_PREREQ`, from its `conda` input. An image with conda is tagged
+`-conda`.
+
 ### 4. Toolkits Layer
 
 The toolkits layer adds general-purpose development tooling needed by compilers, MPI
@@ -138,7 +146,7 @@ This layer is controlled by:
 TOOLKITS_PREREQ
 ```
 
-It typically builds on the Miniforge layer.
+It builds on `miniforge` or `no-miniforge`.
 
 ### 5. Compiler Layers
 
@@ -230,9 +238,14 @@ MPI wrapper compilers.
 
 ### 9. FFT and Numerical Libraries
 
-The FFT layer builds numerical libraries such as:
+The `blaslibs` stage builds OpenBLAS with `DYNAMIC_ARCH`: one portable library
+that picks its kernels from CPUID when it loads. It is built with the system gcc
+and no `-march`, BLAS and CBLAS only, single-threaded.
 
-- FFTW,
+The `fftlibs` stage then builds:
+
+- FFTW, with its SIMD codelets (SSE2 to AVX-512 on x86_64, NEON on aarch64),
+  which its planner chooses from at run time,
 - HeFFTe.
 
 This layer is normally one of the last substantial build layers before the final image.
@@ -256,12 +269,15 @@ FROM ${FINAL_TARGET} AS final
 The final stage performs final image assembly tasks, including:
 
 - copying `extras/` into `/container/extras/`,
+- installing `report_cpu_features` into `/container/bin/`,
 - listing large directories for diagnostics,
 - cleaning or normalizing `LD_LIBRARY_PATH`,
 - generating `MANPATH`,
 - adding a build-completion timestamp,
 - creating the `plainuser` user,
-- changing ownership of `/container`,
+- giving `plainuser` ownership of `/container` itself, `config_env.sh` and
+  `logs/` -- deliberately not the whole tree, which would store a second copy
+  of every file in the final layer,
 - printing the final `/container/config_env.sh`.
 
 The final image entrypoint is:

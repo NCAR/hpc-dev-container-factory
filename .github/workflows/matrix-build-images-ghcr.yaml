@@ -1,20 +1,13 @@
 name: Build HPC Development Images (GHCR)
 
-# GHCR counterpart to matrix-build-images.yaml.  The two reusable callees have
-# identical input names and semantics, so the matrix axes, every include:
-# build-args block and every exclude: below are carried over verbatim -- keep
-# them in sync when either file changes.
+# The full matrix: compilers x MPI x GPU x arch, for one base OS per dispatch.
+# This file is the authoritative source for compiler, MPI and library versions;
+# cluster-images-ghcr.yaml mirrors them -- keep the two in sync when bumping.
 #
-# Differences from the DockerHub original, and only these:
-#   * uses:        -> build-hpc-dev-image-ghcr.yaml
-#   * secrets:     -> registry_token (GITHUB_TOKEN) instead of dockerhub_token
-#   * permissions: -> packages: write, so GITHUB_TOKEN may push to GHCR
-#   * docker_repo  -> GHCR namespaces, owner resolved in the with: block
-#
-# For the six-image Derecho deployment set, use derecho-images-ghcr.yaml.
-# Narrowing THIS matrix is not an option: the include: blocks below name
-# compilers/arches outside any narrowed axis set, and GitHub turns each
-# non-matching include into a malformed standalone job (see CLAUDE.md).
+# For the clusters' six-image set, use cluster-images-ghcr.yaml.  Narrowing
+# THIS matrix is not an option: the include: blocks below name compilers and
+# arches outside any narrowed axis set, and GitHub turns each non-matching
+# include into a malformed standalone job (see CLAUDE.md).
 
 on:
   workflow_dispatch:
@@ -197,7 +190,7 @@ jobs:
       arch: ${{ matrix.arch }}
       runner: ${{ matrix.arch == 'x86_64' && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
       free_runner_space: true
-      conda: true
+      conda: false
       gpu: ${{ matrix.gpu }}
       gpu_build_args: ${{ matrix.gpu_build_args }}
       compiler: ${{ matrix.compiler }}

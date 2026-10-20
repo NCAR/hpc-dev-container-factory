@@ -26,19 +26,22 @@ on:
           - aarch64
 
       conda:
-        description: "Include Conda (Miniforge)"
+        description: "Include Conda (Miniforge); adds -conda to the tag"
         type: boolean
         required: false
-        default: true
+        default: false
 
+      # gcc14 is gcc 14.3.0 built from source, as in the matrix.  It was "gcc",
+      # which built the Dockerfile's default (13.3.0) and published it under
+      # the same tag as the distribution's own gcc (os-gcc's label is "gcc").
       compiler:
-        description: "Compiler"
+        description: "Compiler (os-gcc = the distribution's gcc; gcc14 = 14.3.0 from source)"
         type: choice
         required: true
         default: os-gcc
         options:
           - os-gcc
-          - gcc
+          - gcc14
           - oneapi
           - aocc
           - nvhpc
@@ -91,8 +94,9 @@ jobs:
       publish: ${{ inputs.publish }}
       extra_build_args: |
         BASE_OS=${{ inputs.os }}
-        COMPILER_FAMILY=${{ inputs.compiler }}
-        COMPILERS_PREREQ=${{ inputs.conda && 'miniforge' || inputs.os }}
+        COMPILER_FAMILY=${{ inputs.compiler == 'gcc14' && 'gcc' || inputs.compiler }}
+        GCC_VERSION=14.3.0
+        MARCH_FLAGS=${{ inputs.compiler == 'nvhpc' && inputs.arch == 'x86_64' && '-tp=x86-64-v3' || '' }}
         MPI_FAMILY=${{ inputs.mpi }}
         MPI_PREREQ=${{ inputs.cuda && 'cuda' || 'compilers' }}
         FINAL_TARGET=fftlibs

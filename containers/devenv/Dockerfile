@@ -10,8 +10,9 @@
 #
 #  *_PREREQ defines the prerequisite step for a stage.
 #    For example, The TOOLKITS_PREREQ could take on one of several values,
-#    'miniforge', 'cuda/rocm', or even 'base_os'.  In this way the 'toolkits'
-#    layer is dynamic and can include several (or none) packages.
+#    'miniforge' or 'no-miniforge' (conda, or not, on top of MINIFORGE_PREREQ).
+#    In this way the 'toolkits' layer is dynamic and can include several (or
+#    none) packages.
 #    Similarly, IOLIBS_PREREQ is generally 'mpi'; meaning the 'iolibs' layer
 #    will be built after MPI with full MPI support; however it could be
 #    'compilers' to build an image with no MPI support whatsoever. (rarely used)
@@ -29,7 +30,9 @@ ARG TOOLKITS_PREREQ="miniforge"
 
 ARG IOLIBS_PREREQ="mpi"
 
-ARG FFTLIBS_PREREQ="mpi-iolibs"
+ARG BLASLIBS_PREREQ="mpi-iolibs"
+
+ARG FFTLIBS_PREREQ="blaslibs"
 
 ARG FINAL_TARGET="fftlibs"
 
@@ -85,7 +88,6 @@ RUN mkdir -p /container/{bin,extras,logs} && \
     <<'FILE5' cat > /container/bin/strip-binaries &&\
     <<'FILE6' cat > /container/bin/remove-redundant-static-libs && \
     <<'FILE7' cat > /container/bin/remove-cuda-static-libs && \
-    <<'FILE8' cat > /container/bin/report_cpu_features && \
     chmod a+rx /container/bin/* \
     && cat /container/config_env.sh \
     && ln -s /container/config_env.sh /etc/profile.d/z00-build-env.sh
@@ -247,71 +249,6 @@ while read -r static_lib; do
 done < <(find ${dir} -readable -type f -name "lib*_static*.a")
 echo "After: $(du -hs ${dir})"
 FILE7
-#!/bin/bash
-#-------------------------------------------------------------------------------
-# report_cpu_features [executable]
-#
-#  (1) always: report this host's CPU and its microarchitecture (SIMD) features.
-#  (2) optional: given an executable, also report the ISA it REQUIRES, so a
-#      binary built for a newer CPU than the host (a latent SIGILL, e.g. an
-#      nvhpc binary targeting -tp znver4/AVX-512 run on an AVX2-only runner)
-#      is obvious instead of a bare "Illegal instruction".
-#
-#  Works on x86_64 and aarch64; purely informational, never fails the caller.
-#-------------------------------------------------------------------------------
-arch=$(uname -m)
-
-echo "== host: $(uname -mns) =="
-case "${arch}" in
-    x86_64)
-        grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ *//'
-        echo -n "  ISA flags: "
-        grep -m1 flags /proc/cpuinfo | grep -oE 'avx512[a-z]*|avx2|fma|bmi[12]|sse4_[12]' | sort -u | tr '\n' ' '
-        echo
-        ;;
-    aarch64|arm64)
-        grep -m1 -E 'CPU implementer|CPU part' /proc/cpuinfo
-        echo -n "  SIMD: "
-        grep -m1 'Features' /proc/cpuinfo | grep -oE 'asimd|sve[0-9]*|fphp|bf16|i8mm' | sort -u | tr '\n' ' '
-        echo
-        ;;
-    *)
-        echo "  (unhandled arch ${arch})"
-        ;;
-esac
-
-bin="${1:-}"
-[[ -z "${bin}" ]] && exit 0
-if [[ ! -e "${bin}" ]]; then
-    echo "report_cpu_features: no such file: ${bin}" >&2
-    exit 0
-fi
-
-echo "== ${bin} requires =="
-command -v ldd     >/dev/null 2>&1 && { ldd "${bin}" 2>/dev/null || true; }
-command -v readelf >/dev/null 2>&1 \
-    && { readelf -nW "${bin}" 2>/dev/null | grep -iE 'ISA|feature|properties' || echo "  (no GNU ISA-needed note)"; }
-
-if command -v objdump >/dev/null 2>&1; then
-    case "${arch}" in
-        x86_64)
-            if objdump -d "${bin}" 2>/dev/null | grep -qE '%zmm[0-9]+'; then
-                echo "  AVX-512 (zmm) used by binary: YES  (requires an AVX-512 host)"
-            else
-                echo "  AVX-512 (zmm) used by binary: no"
-            fi
-            ;;
-        aarch64|arm64)
-            if objdump -d "${bin}" 2>/dev/null | grep -qE 'z[0-9]+\.[bhsd]'; then
-                echo "  SVE (z-regs) used by binary: YES  (requires an SVE host)"
-            else
-                echo "  SVE (z-regs) used by binary: no"
-            fi
-            ;;
-    esac
-fi
-exit 0
-FILE8
 
 
 #---------------------------------------------------------------------------------
@@ -578,10 +515,19 @@ RUN exec &> >(tee /container/logs/miniforge.log) \
     && conda clean --all --force-pkgs-dirs --yes --verbose \
     && docker-clean
 
+#-------------------------------------------------------------------------------
+# no-miniforge: the same prerequisite, without conda.
+#  TOOLKITS_PREREQ=no-miniforge leaves Miniforge out -- 154 MB of every image,
+#  which nothing built on the image uses.  The build workflow chooses between
+#  the two from its `conda` input, and keeps MINIFORGE_PREREQ (cuda, rocm or
+#  base_os) either way, so a GPU image without conda still has its runtime.
+FROM ${MINIFORGE_PREREQ} AS no-miniforge
+#-------------------------------------------------------------------------------
+
 
 
 #-------------------------------------------------------------------------------
-# TOOLKITS_PREREQ could be miniforge, cuda/rocm, or even base_os
+# TOOLKITS_PREREQ could be miniforge or no-miniforge (or cuda/rocm, or base_os)
 FROM ${TOOLKITS_PREREQ} AS toolkits
 RUN echo "Setting the third-party toolkits layer"
 #-------------------------------------------------------------------------------
@@ -1037,7 +983,9 @@ FROM compilers AS mpich3
 #    mpich-3.4.3 and nvfortran misunderstand each other regarding real*16, avoid false positive.
 #    so we take the rather drastic step of modifying configure.ac to prevent building the f08 interface,
 #    no matter what configure *thinks* it finds...
-#    does not fPIC by default, so add here.
+#    does not fPIC by default, so add here.  NOT ${MARCH_FLAGS}: for nvhpc it is nvc's
+#    -tp=..., which gcc rejects.  The library is built portably by gcc either way;
+#    apps built through the wrappers pass MARCH_FLAGS themselves.
 #   CLANG:
 #    ditto f08 interface
 #   GCC:
@@ -1063,10 +1011,10 @@ RUN exec &> >(tee /container/logs/mpich.log) \
             sed -i 's/f08_works=yes/f08_works=no/g' configure \
             && export CC="/usr/bin/gcc" \
             && export CXX="/usr/bin/g++" \
-            && export CXXFLAGS="-fPIC ${MARCH_FLAGS}" \
-            && export CFLAGS="-fPIC ${MARCH_FLAGS}" \
-            && export FFLAGS="-fPIC ${MARCH_FLAGS}" \
-            && export FCFLAGS="-fPIC ${MARCH_FLAGS}" \
+            && export CXXFLAGS="-fPIC" \
+            && export CFLAGS="-fPIC" \
+            && export FFLAGS="-fPIC" \
+            && export FCFLAGS="-fPIC" \
             ;; \
         "clang") \
             sed -i 's/f08_works=yes/f08_works=no/g' configure \
@@ -1465,8 +1413,81 @@ LABEL pio="${PIO_VERSION}"
 
 
 #-------------------------------------------------------------------------------
+# OpenBLAS, DYNAMIC_ARCH: one portable build that picks its kernels from CPUID
+# when it loads -- AVX-512 (SkylakeX, Cooperlake) on Cascade Lake and Genoa, Zen
+# on Derecho -- so a portable image still delivers AVX-512 where it pays.  The
+# seam study measured exactly this build (BenchmarkRunnerPlan.md section 11,
+# item 11): 65.9 GFLOP/s a core at DGEMM on Cascade Lake, 1.74x its AVX2 kernels,
+# level with MKL on Intel and ahead of it on AMD.
+#
+#  * the SYSTEM gcc, not the image's compiler, and no -march: the library is the
+#    portable artifact, so it must not inherit MARCH_FLAGS, nvc's -tp, or any
+#    compiler's own options.  CFLAGS and friends are unset for the same reason.
+#  * TARGET is the baseline for the code that is NOT dispatched: GENERIC (plain
+#    C) on x86_64, ARMV8 on aarch64.
+#  * BLAS (and CBLAS) only -- no LAPACK, no Fortran -- and single-threaded: one
+#    MPI rank per core supplies the parallelism.  USE_LOCKING=1 still makes it
+#    safe to call from several threads at once (an OpenMP app's threads), which
+#    a USE_THREAD=0 build otherwise is not: its buffer allocation is unlocked.  FC is still named, because
+#    OpenBLAS probes it for link flags even with NOFORTRAN=1, and nvfortran or
+#    ifx draws options it rejects.
+#  * its own stage, so FFTW and HeFFTe can be rebuilt without rebuilding it.
+#-------------------------------------------------------------------------------
+FROM ${BLASLIBS_PREREQ} AS blaslibs
+ARG OPENBLAS_VERSION="0.3.30"
+ARG OPENBLAS_URL="https://github.com/OpenMathLib/OpenBLAS/releases/download/v${OPENBLAS_VERSION}/OpenBLAS-${OPENBLAS_VERSION}.tar.gz"
+RUN exec &> >(tee /container/logs/blaslibs.log) \
+    && echo "building OpenBLAS-${OPENBLAS_VERSION} (DYNAMIC_ARCH)" \
+    && OPENBLAS_INSTALL_PATH="/container/openblas/${OPENBLAS_VERSION}" \
+    && case "$(uname -m)" in \
+         aarch64) ob_target=ARMV8 ;; \
+         *)       ob_target=GENERIC ;; \
+       esac \
+    && ob_flags="DYNAMIC_ARCH=1 TARGET=${ob_target} USE_THREAD=0 USE_OPENMP=0 USE_LOCKING=1 NUM_THREADS=1 NO_LAPACK=1 NOFORTRAN=1" \
+    && ob_cc="CC=/usr/bin/gcc FC=/usr/bin/gfortran HOSTCC=/usr/bin/gcc" \
+    && cd /tmp && curl --retry 3 --retry-delay 5 -sSL ${OPENBLAS_URL} | tar zx \
+    && cd ./OpenBLAS-${OPENBLAS_VERSION} \
+    && env -u CFLAGS -u CXXFLAGS -u FFLAGS -u FCFLAGS -u F77FLAGS -u LDFLAGS -u CPATH -u LIBRARY_PATH \
+         make --no-print-directory --jobs ${MAKE_J_PROCS} ${ob_cc} ${ob_flags} libs shared > /tmp/openblas-make.log 2>&1 \
+         || { tail -n 200 /tmp/openblas-make.log; exit 1; } \
+    && env -u CFLAGS -u CXXFLAGS -u FFLAGS -u FCFLAGS -u F77FLAGS -u LDFLAGS -u CPATH -u LIBRARY_PATH \
+         make --no-print-directory ${ob_cc} ${ob_flags} PREFIX=${OPENBLAS_INSTALL_PATH} install \
+    && rm -f ${OPENBLAS_INSTALL_PATH}/lib/*.a \
+    && strip-binaries ${OPENBLAS_INSTALL_PATH}/lib \
+    && add_conf "\n# OpenBLAS ${OPENBLAS_VERSION} (DYNAMIC_ARCH, BLAS+CBLAS, serial)" \
+    && add_conf "export OPENBLAS_VERSION=${OPENBLAS_VERSION}" \
+    && add_conf "export OPENBLAS_ROOT=${OPENBLAS_INSTALL_PATH}" \
+    && add_conf "export CPATH=${OPENBLAS_INSTALL_PATH}/include:\${CPATH}" \
+    && add_conf "export LIBRARY_PATH=${OPENBLAS_INSTALL_PATH}/lib:\${LIBRARY_PATH}" \
+    && echo "${OPENBLAS_INSTALL_PATH}/lib" >> /etc/ld.so.conf.d/openblas.conf \
+    && ldconfig --verbose \
+    && ls -l ${OPENBLAS_INSTALL_PATH}/lib \
+    && docker-clean
+LABEL openblas="${OPENBLAS_VERSION}"
+
+
+
+#-------------------------------------------------------------------------------
 # FFTW & HEFFTE (with MPI support)
 #  (sufficient to build MuRAM)
+#
+# FFTW is built with its SIMD codelets -- SSE2, AVX, AVX2 and AVX-512 on x86_64,
+# NEON on aarch64.  FFTW chooses among them from CPUID at run time, so this is
+# safe in a portable image: on a host without AVX-512 the AVX-512 codelets are
+# never offered to the planner (on Derecho the AVX-512 build fell back to AVX2
+# and ran exactly as fast).  Only the codelet directories get -mavx2 and the
+# like; the rest of the library is compiled as before.  Without these flags its
+# codelets were scalar.
+#
+# nvhpc builds FFTW with the system gcc.  FFTW's configure knows the SIMD flags
+# of gcc, icc and clang only (icx and aocc count as clang), and nvc is none of
+# them.  The library's interface is C, so it links into nvc and nvfortran code
+# as it does into gcc's.  The MPI part is still compiled by MPICC, i.e. nvc, and
+# with the gcc CFLAGS it would get no -tp and target the BUILD runner's CPU, so
+# MPICC becomes a one-line wrapper that adds MARCH_FLAGS (-tp=...).  It must be a
+# script, not MPICC="mpicc -tp=...": libtool links the shared library with ITS
+# compiler, gcc, and hands gcc every word after MPICC's first as a flag.
+#-------------------------------------------------------------------------------
 FROM ${FFTLIBS_PREREQ} AS fftlibs
 #-------------------------------------------------------------------------------
 ARG FFTW_VERSION="3.3.10"
@@ -1475,26 +1496,46 @@ RUN exec &> >(tee /container/logs/fftlibs.log) \
     && echo "building fftw-${FFTW_VERSION}" \
     && env \
     && FFTW_INSTALL_PATH="/container/fftw/${FFTW_VERSION}" \
+    && case "$(uname -m)" in \
+         x86_64)  fftw_simd="--enable-sse2 --enable-avx --enable-avx2 --enable-avx512" \
+                  fftw_have="HAVE_SSE2 HAVE_AVX HAVE_AVX2 HAVE_AVX512" ;; \
+         aarch64) fftw_simd="--enable-neon" \
+                  fftw_have="HAVE_NEON" ;; \
+         *)       fftw_simd="" fftw_have="" ;; \
+       esac \
+    && case "${COMPILER_FAMILY}" in \
+         nvhpc) fftw_cc="/usr/bin/gcc" fftw_cflags="-O3 -fPIC" fftw_mpicc="/tmp/fftw-mpicc" \
+                && printf '#!/bin/sh\nexec %s %s "$@"\n' "${MPICC}" "${MARCH_FLAGS}" > /tmp/fftw-mpicc \
+                && chmod +x /tmp/fftw-mpicc && cat /tmp/fftw-mpicc ;; \
+         *)     fftw_cc="${CC}"        fftw_cflags="-O3 ${CFLAGS}" fftw_mpicc="${MPICC}" ;; \
+       esac \
+    && echo "FFTW SIMD: ${fftw_simd:-<none>}, CC=${fftw_cc}, MPICC=${fftw_mpicc}, CFLAGS=${fftw_cflags}" \
     && cd /tmp && curl --retry 3 --retry-delay 5 -sSL ftp://fftw.org/pub/fftw/fftw-${FFTW_VERSION}.tar.gz | tar zx \
     && cd ./fftw-${FFTW_VERSION} \
     && ./configure --help \
     && (./configure \
-            CFLAGS="-O3 ${CFLAGS}" \
+            CC="${fftw_cc}" MPICC="${fftw_mpicc}" CFLAGS="${fftw_cflags}" \
             --prefix=${FFTW_INSTALL_PATH} \
             --disable-static --enable-shared --enable-float \
-            --enable-mpi --enable-threads \
+            --enable-mpi --enable-threads ${fftw_simd} \
             --disable-dependency-tracking \
             || cat config.log) \
+    && for d in ${fftw_have}; do \
+         grep -q "define ${d} 1" config.h || { echo "FFTW (float) configured without ${d}"; exit 1; }; \
+       done \
     && make --no-print-directory --jobs ${MAKE_J_PROCS} V=0 \
     && make --no-print-directory --silent install-strip \
     && make --no-print-directory distclean \
     && (./configure \
-            CFLAGS="-O3 ${CFLAGS}" \
+            CC="${fftw_cc}" MPICC="${fftw_mpicc}" CFLAGS="${fftw_cflags}" \
             --prefix=${FFTW_INSTALL_PATH} \
             --disable-static --enable-shared \
-            --enable-mpi --enable-threads \
+            --enable-mpi --enable-threads ${fftw_simd} \
             --disable-dependency-tracking \
             || cat config.log) \
+    && for d in ${fftw_have}; do \
+         grep -q "define ${d} 1" config.h || { echo "FFTW (double) configured without ${d}"; exit 1; }; \
+       done \
     && make --no-print-directory --jobs ${MAKE_J_PROCS} V=0 \
     && make --no-print-directory --silent install-strip \
     && add_conf "\n# FFTW ${FFTW_VERSION}" \
@@ -1569,9 +1610,21 @@ LABEL heffte="${HEFFTE_VERSION}"
 #  remove duplicates from the front of the LD_LIBRARY_PATH
 #  handle MANPATH all at once
 ################################################################################
+#
+#  plainuser owns /container itself, config_env.sh and logs/ -- NOT the tree.
+#  `chown -R plainuser: /container/` rewrote the metadata of every file under
+#  /container, and in a layered image that stores a second copy of each one in
+#  this final layer: 27-47% of every image, 3.8 GB of an nvhpc one, carried by
+#  the registry, every runner's disk and every .sif build's download.  Nothing
+#  runs as plainuser by default (the image stays root, see USER below), and
+#  plainuser has passwordless sudo, so the tree's ownership bought nothing.
+#  What it may want to do without sudo -- add a directory under /container,
+#  append to config_env.sh, write a log -- the three entries it owns cover.
+################################################################################
 FROM ${FINAL_TARGET} AS final
 COPY extras/ /container/extras/
 RUN exec &> >(tee /container/logs/final.log) \
+    && install -m 0755 /container/extras/report_cpu_features.sh /container/bin/report_cpu_features \
     && list-large-directories \
     && add_conf "\n# Final configuration:" | tee -a /container/config_env.sh \
     && add_conf "export LD_LIBRARY_PATH=$(echo "${LD_LIBRARY_PATH}" | awk -v RS=: -v ORS=: '!seen[$0]++' | sed 's/:$//')" \
@@ -1582,7 +1635,7 @@ RUN exec &> >(tee /container/logs/final.log) \
          || echo "no mpicxx in this image; skipping report_placement" ) \
     && useradd plainuser -d /home/plainuser \
     && echo "plainuser 	ALL=(ALL)	NOPASSWD: ALL" >> /etc/sudoers \
-    && chown -R plainuser: /container/ \
+    && chown plainuser: /container/ /container/config_env.sh /container/logs/ \
     && cat /container/config_env.sh
 
 # ref: https://spack.readthedocs.io/en/latest/containers.html
