@@ -6,21 +6,35 @@
 > by Benjamin S. Kirk, who wrote the factory. It is distributed, as the original
 > is, under the Creative Commons Attribution-ShareAlike 4.0 International licence
 > ([LICENSE.md](LICENSE.md)). The history is kept, so the commits after the copy
-> show what has changed. Parts of this README still describe the benchmark
-> runner, which stayed behind in kedziora-csg/demo_github_actions.
+> show what has changed. The benchmark runner that runs these images on NCAR's
+> clusters stayed behind in kedziora-csg/demo_github_actions.
 
 ## Overview
 
 This repository defines a continuous integration and continuous delivery (CI/CD) system for building, validating, and publishing containerized high-performance computing (HPC) development environments. The principal deliverables are multi-layer Docker images that combine operating systems, compiler toolchains, MPI implementations, optional GPU runtimes, and commonly used scientific libraries.
 
-The images are intended to provide reproducible development and testing environments for HPC software stacks. Published images use naming patterns such as `ncarcisl/hpcdev-*` and can be pulled from Docker Hub.
+The images are intended to provide reproducible development and testing environments for HPC software stacks. They are published to the GitHub Container Registry as `ghcr.io/ncar/hpcdev-<arch>`, are public, and can be pulled without credentials.
 
-Although the repository name suggests a GitHub Actions demonstration, the core implementation is the container build system under `containers/devenv` and the GitHub Actions workflows that generate and execute the build matrix.
+The core implementation is the container build system under `containers/devenv` and the GitHub Actions workflows that generate and execute the build matrix.
 
-The design relies on a parameterized multi-stage Dockerfile, centralized environment configuration, source-built scientific libraries, and GitHub Actions workflows that expand and validate many compiler, MPI, GPU, architecture, and operating-system combinations. This multiple container approach is useful for maintaining stable builds of HPC software on modern HPC systems, and the representative workflow for this starts with `matrix-build-images.yaml`. For use as a standin for testing on a particular type of system with containerized runners, use the `dial-an-image.yaml` workflow with parameterization corresponding to the target system. The resulting image can be shared with users or collaborating developers for a convenient development platform. If your main interest is to quickly use a known stand-in for a particular HPC environment, then an image can be pulled from the Docker Hub registry.
+The design relies on a parameterized multi-stage Dockerfile, centralized environment configuration, source-built scientific libraries, and GitHub Actions workflows that expand and validate many compiler, MPI, GPU, architecture, and operating-system combinations. The published images are **portable**: built with no `-march`, so they run on any CPU of their architecture, while the libraries that matter most for speed (OpenBLAS, FFTW) choose their kernels for the CPU at run time. What every image promises to software built on it is stated in [CONTRACT.md](CONTRACT.md).
 
-[TODO: make a list of containers with links to a human readable manifest/inventory for each container.]
+Three workflows build images: `cluster-images-ghcr.yaml` builds the six images NCAR's clusters use, `matrix-build-images-ghcr.yaml` builds the full matrix for one operating system, and `dial-an-image-ghcr.yaml` builds one hand-picked variant, for example a stand-in for a particular system. Published images and their tags are listed on the [hpcdev-x86_64 package page](https://github.com/orgs/NCAR/packages/container/package/hpcdev-x86_64).
 
+## Using an Image
+
+```bash
+docker run -it --rm ghcr.io/ncar/hpcdev-x86_64:leap-gcc14-openmpi-latest
+```
+
+opens a login shell with the whole stack on `PATH` (on an Apple Silicon Mac, add `--platform linux/amd64`). To run one command, give it as plain words, for example `docker run --rm <image> mpicc --version`; the entrypoint is already a login shell, and wrapping the command in `bash -lc '...'` runs only its first word. To check that an image keeps its contract, run `/container/extras/check_base_contract.sh --published` inside it. On a cluster, Apptainer builds a `.sif` from the same reference:
+
+```bash
+apptainer pull hpcdev.sif docker://ghcr.io/ncar/hpcdev-x86_64:leap-gcc14-openmpi-latest
+apptainer exec hpcdev.sif /container/extras/check_base_contract.sh --published
+```
+
+Tags have the form `<os>-<compiler>-<mpi>[-<gpu>][-conda]-latest`, plus a copy dated `-YY.MM`; [CONTRACT.md](CONTRACT.md) explains each part. Pin an image by digest for reproducibility.
 
 ## Image Composition
 
@@ -33,7 +47,7 @@ Each development image represents a selected combination of several major dimens
 - Processor architecture
 - Scientific library versions
 
-The scientific software stack is built primarily from source. The common library set includes HDF5, NetCDF C, NetCDF Fortran, PnetCDF, ParallelIO, FFTW, and HeFFTe. These libraries are layered on top of the selected compiler and MPI stack so that the final image can be used to build, test, and package HPC applications.
+The scientific software stack is built primarily from source. The common library set includes HDF5, NetCDF C, NetCDF Fortran, PnetCDF, ParallelIO, OpenBLAS, FFTW, and HeFFTe. Conda (Miniforge) is optional and off by default. These libraries are layered on top of the selected compiler and MPI stack so that the final image can be used to build, test, and package HPC applications.
 
 ## Repository Layout
 
@@ -57,34 +71,26 @@ The related file:
 containers/devenv/Makefile
 ```
 
-prepares the Docker build context by copying the contents of `scripts/` into the build context as `extras/`. These scripts provide examples of build instructions for HPC simulation software or benchmarking software that rely on the provided development tool chains. 
+prepares the Docker build context by copying the contents of `scripts/` into the build context as `extras/`, which every image carries as `/container/extras/`. These scripts provide examples of build instructions for HPC simulation software or benchmarking software that rely on the provided development tool chains, and the tools the contract promises.
 
 ### Supporting Containers
 
 Several smaller container definitions are located beneath `containers/`. Each is built from a caller-supplied `BASE_IMAGE`, so these images are secondary consumers of the main development image rather than independent base images:
 
-- `containers/demo/` builds a demonstration application image on top of a development image.
 - `containers/test/` builds test-runner images on top of a development image, including support for smoke tests and benchmark execution.
 - `containers/publish/` builds the production image on top of the CI-built development image and can run deployment scripts before publication.
 
 The publish step in the GitHub Actions (GHA) workflow attaches Software Bill of Materials metadata by setting `sbom: true` on the Docker build action, enabling downstream vulnerability, license, and supply-chain analysis. The `containers/publish/Dockerfile` itself only defines the final image build steps.
 
-### HPC Deployment Configuration
+### The Base Contract
 
-Three top-level directories deploy and run the images on HPC clusters:
+[CONTRACT.md](CONTRACT.md) states what every image promises to anything built on it: the tag format, `/container/config_env.sh` and the entrypoint, `build_common.cfg`, `MARCH_FLAGS`, the compiler and MPI wrappers, the diagnostic tools, and the libraries. `scripts/check_base_contract.sh` checks each promise from inside an image, and CI runs it on every build and on every published image. A change to a promise is a change to both files.
 
-```text
-hpcrun/    the runner: submit, validate and collect on the login node; runner.sh in the job
-sites/     what each machine is -- sites/ncar.yaml, sites/ncar/<cluster>.yaml -- and each
-           cluster's profile and PBS entry points
-sif/       turns a published image into a digest-pinned Apptainer .sif on a login node
-```
-
-For guidance on running on NCAR clusters see [sites/ncar/README.md](sites/ncar/README.md) and some contextual aspects below.
+The benchmark runner that deploys these images on NCAR's clusters -- `hpcrun/`, `sites/`, `sif/` and the app images in `apps/` -- lives in [kedziora-csg/demo_github_actions](https://github.com/kedziora-csg/demo_github_actions) and depends on this repository only through the contract.
 
 ### Build and Application Scripts
 
-The `scripts/` directory contains build helpers for larger HPC applications and software frameworks, including examples such as WRF, CESM, ESMF, PETSc, DART, MPAS, and Kokkos. It also contains sample programs such as `hello_world.*`.
+The `scripts/` directory contains build helpers for larger HPC applications and software frameworks, including examples such as WRF, CESM, ESMF, PETSc, DART, MPAS, and Kokkos; they test that the stack can build real science codes. It also contains sample programs such as `hello_world.*`, the build scripts for `report_placement` and the OSU Micro-Benchmarks (with OSU's app contract in `app.d/osu/`), `report_cpu_features.sh`, and `check_base_contract.sh`. Only files whose names contain a dot are copied into the image.
 
 The shared file:
 
@@ -98,11 +104,10 @@ is sourced by build scripts and defines common variables such as `INSTALL_ROOT` 
 
 The `.github/workflows/` directory contains the automation that drives image construction, testing, and publication. Important workflows include:
 
-- `build-hpc-development-image.yaml`
-- `matrix-build-images.yaml`
-- `devel-build-images.yaml`
-- `dial-an-image.yaml`
-- `app-image-builder-ghcr.yaml`, which builds the app images in `apps/`
+- `build-hpc-dev-image-ghcr.yaml`, the reusable build, test and publish workflow
+- `cluster-images-ghcr.yaml`
+- `matrix-build-images-ghcr.yaml`
+- `dial-an-image-ghcr.yaml`
 
 These will be discussed below.
 
@@ -117,23 +122,24 @@ For a focused summary of the Dockerfile structure, see [DockerfileDoc.md](Docker
 At a high level, the build graph follows this structure:
 
 ```text
-base_os -> optional GPU runtime -> miniforge -> toolkits -> 
-compiler -> MPI -> I/O libraries -> MPI I/O libraries -> 
-FFT libraries -> final image
+base_os -> optional GPU runtime -> miniforge | no-miniforge -> toolkits ->
+compiler -> MPI -> I/O libraries -> MPI I/O libraries ->
+OpenBLAS -> FFT libraries -> final image
 ```
 
 The major logical layers are:
 
 1. Base operating system
 2. Optional CUDA or ROCm runtime
-3. Miniforge Python environment
+3. Optional Miniforge Python environment (off by default)
 4. General development toolkits
 5. Compiler toolchain
 6. MPI implementation
 7. Serial scientific I/O libraries
 8. MPI-enabled I/O libraries
-9. FFT and numerical libraries
-10. Final image assembly
+9. OpenBLAS (`blaslibs`)
+10. FFT libraries (`fftlibs`)
+11. Final image assembly
 
 This design allows a single Dockerfile to produce many variants without duplicating large sections of build logic.
 
@@ -148,6 +154,7 @@ Docker build arguments determine how the multi-stage graph is assembled. Represe
 - `MINIFORGE_PREREQ`
 - `TOOLKITS_PREREQ`
 - `IOLIBS_PREREQ`
+- `BLASLIBS_PREREQ`
 - `FFTLIBS_PREREQ`
 - `FINAL_TARGET`
 
@@ -166,8 +173,12 @@ flowchart TD
     C1 --> D["miniforge<br/>Python/Conda environment"]
     C2 --> D
     C3 --> D
+    C1 --> D2["no-miniforge<br/>No conda (default)"]
+    C2 --> D2
+    C3 --> D2
 
     D --> E["toolkits<br/>General development tools"]
+    D2 --> E
 
     E --> F1["os-gcc<br/>Distribution GCC"]
     E --> F2["gcc<br/>Source-built GCC"]
@@ -193,7 +204,8 @@ flowchart TD
 
     I --> J["iolibs<br/>HDF5, NetCDF, related serial I/O libraries"]
     J --> K["mpi-iolibs<br/>PnetCDF, ParallelIO, MPI-enabled I/O"]
-    K --> L["fftlibs<br/>FFTW, HeFFTe"]
+    K --> K2["blaslibs<br/>OpenBLAS, DYNAMIC_ARCH"]
+    K2 --> L["fftlibs<br/>FFTW with SIMD codelets, HeFFTe"]
 
     L --> M["final<br/>Final exported image"]
 ```
@@ -274,7 +286,7 @@ The `COMPILER_FAMILY` argument selects the compiler layer. Supported compiler fa
 
 The `MPI_FAMILY` argument selects the MPI implementation, typically OpenMPI, MPICH 5.x, or MPICH 3.4.x.
 
-The `*_PREREQ` arguments are especially important because they connect the logical stages in the Docker build graph. For example, setting `MINIFORGE_PREREQ=cuda` places the Miniforge layer on top of the CUDA-enabled stage. Similarly, setting `IOLIBS_PREREQ=mpi` enables parallel HDF5 and NetCDF builds by placing the I/O library stage after the MPI stage.
+The `*_PREREQ` arguments are especially important because they connect the logical stages in the Docker build graph. For example, setting `MINIFORGE_PREREQ=cuda` places the Miniforge layer on top of the CUDA-enabled stage, and `TOOLKITS_PREREQ=no-miniforge` leaves conda out, which the build workflow does unless its `conda` input is on. Similarly, setting `IOLIBS_PREREQ=mpi` enables parallel HDF5 and NetCDF builds by placing the I/O library stage after the MPI stage.
 
 ## Environment Configuration
 
@@ -297,33 +309,28 @@ Individual Docker stages append `export` statements to this file through the `ad
 
 This configuration file is sourced by login shells inside the container and serves as the authoritative description of the runtime environment. Because the image is assembled from many independently built layers, a centralized environment file helps ensure that later stages can locate compilers, headers, libraries, and tools installed by earlier stages.
 
-Libraries are installed under versioned prefixes beneath `/container/`, which makes the image layout explicit and easier to inspect. For example in the `hpcdev-x86_64:noble-gcc15-mpich-26.07` container, 
+Libraries are installed under versioned prefixes beneath `/container/`, which makes the image layout explicit and easier to inspect, much as `/opt/` holds optional software on a host. For example, in `hpcdev-x86_64:leap-gcc14-openmpi-26.10`:
 
 ```
-# ls container/
-# ls container/       
-bin	       extras  hdf5	      logs	 netcdf		       pnetcdf
-c-blosc        fftw    heffte	      miniforge  osu-micro-benchmarks  szip
-config_env.sh  gcc     init-conda.sh  mpich	 parallelio
+# ls /container
+app.d  c-blosc        extras  gcc   heffte  netcdf    openmpi               parallelio  szip
+bin    config_env.sh  fftw    hdf5  logs    openblas  osu-micro-benchmarks  pnetcdf
 ```
 
-This is provides the added elements for the HPC development tool chain. Examples of applications that can be built based on this tool chain are in the subdirectory `examples`. This is similar to the often used /opt/ directory for optional software for a given operating system implementation. 
+`/container/extras/` holds the scripts copied from `scripts/`, which show how applications can be built on this tool chain:
 
 ```
-# ls container/extras/
-Dockerfile                      build_wrf.sh
-build_cesm.sh                   hello_world.c
-build_common.cfg                hello_world.cu
-build_cuda_samples.sh           hello_world.cxx
-build_dart.sh                   hello_world.f90
-build_esmf.sh                   hello_world_mpi.cxx
-build_fasteddy.sh               install_conda.sh
-build_kokkos.sh                 install_npl.sh
-build_mpas.sh                   parallel_stl_sort.cxx
-build_muram.sh                  remove_static_bloat.sh
-build_osu-micro-benchmarks.sh   report_placement.cxx
-build_petsc.sh                  update_headers.pl
-build_report-placement.sh
+# ls /container/extras
+Dockerfile                     build_muram.sh                 hello_world_mpi.cxx
+app.d                          build_osu-micro-benchmarks.sh  install_conda.sh
+build_cesm.sh                  build_petsc.sh                 install_npl.sh
+build_common.cfg               build_report-placement.sh      parallel_stl_sort.cxx
+build_cuda_samples.sh          build_wrf.sh                   remove_static_bloat.sh
+build_dart.sh                  check_base_contract.sh         report_cpu_features.sh
+build_esmf.sh                  hello_world.c                  report_placement.cxx
+build_fasteddy.sh              hello_world.cu                 update_headers.pl
+build_kokkos.sh                hello_world.cxx
+build_mpas.sh                  hello_world.f90
 ```
 
 ## NVHPC-Specific Handling
@@ -341,8 +348,8 @@ Default software versions are declared as Dockerfile `ARG` values. However, the 
 The most important workflow files for version management are:
 
 ```text
-.github/workflows/matrix-build-images.yaml
-.github/workflows/devel-build-images.yaml
+.github/workflows/matrix-build-images-ghcr.yaml    the full matrix; authoritative
+.github/workflows/cluster-images-ghcr.yaml         the clusters' six images; mirrors it
 ```
 
 A typical version bump requires editing one or more of the following matrix entries:
@@ -357,57 +364,56 @@ For NVHPC updates, the Dockerfile must also be reviewed for CUDA exclusion and r
 
 ## GitHub Actions Workflows
 
-### Devel - Build HPC Development Images
+All four workflows are in `.github/workflows/`. The three top-level ones are started by hand (`workflow_dispatch`); a workflow can be dispatched only once its file is on the default branch, but a dispatch with `--ref <branch>` then runs that branch's version of every workflow it uses.
 
-This is the main build workflow used by other top-level workflows.
-
-The workflow:
+### Build, Test, and Deploy to GHCR (reusable)
 
 ```text
-.github/workflows/build-hpc-development-image.yaml
+.github/workflows/build-hpc-dev-image-ghcr.yaml
 ```
-- Purpose: Reusable workflow that builds, tests, and **optionally publishes** a single HPC development image variant.
-- Triggers: `workflow_call` from other workflows.
-- Key GHA jobs:
-  - `build-image`: Build image layers, run image tests, and publish deployment image/tags when enabled.
 
-It is the main workflow for building the HPC containers. It is invoked by other workflows and performs the core Docker image build using `docker/build-push-action`.
+- Purpose: builds, tests, and **optionally publishes** a single image variant.
+- Triggers: `workflow_call` from the other workflows.
+- Key job: `build-image`.
 
-This workflow uses registry-backed cache repositories keyed on build inputs. After the build and test phases, a separate publication pass is performed through `containers/publish/Dockerfile`.
-
-The workflow named, "BaseOS + Toolkits + Compiler + MPI Image" does the actual building of the Docker image. `tags: ${{ env.CI_TAG }}` provides that name based on 
+It performs the core Docker image build with `docker/build-push-action`, using registry-backed cache keyed on the build inputs. The step "BaseOS + Toolkits + Compiler + MPI Image" builds the image and tags it `${{ env.CI_TAG }}`:
 
 ```
 CI_REPO=${PUBLISH_REPO}-cache
-CI_TAG=${CI_REPO}:${{ inputs.os }}${COMPILER_LABEL}${MPI_LABEL}${GPU_LABEL}-${INPUTS_SHA}
+CI_TAG=${CI_REPO}:${{ inputs.os }}${COMPILER_LABEL}${MPI_LABEL}${GPU_LABEL}${CONDA_LABEL}-${INPUTS_SHA}
 ```
 
-It produces registry name something like:
-```
-ncarcisl/hpcdev-x86_64-cache:almalinux9-gcc-openmpi-a1b2c3d
-```
-
-This is not the same as the public facing tag for the published image, which is set in "Publish Image" workflow. This uses 
+for example
 
 ```
-PUBLISH_REPO=${{ inputs.docker_repo }}-${{ inputs.arch }}
-          PUBLISH_TAG=${PUBLISH_REPO}:${{ inputs.os }}${COMPILER_LABEL}${MPI_LABEL}${GPU_LABEL}-latest
+ghcr.io/ncar/hpcdev-x86_64-cache:leap-gcc14-mpich-cd7f37b
 ```
 
-and looks like 
+The `-cache` package is private and holds only CI intermediates and the build cache. The tests then run against that image: the base contract, the layer sizes, `report_placement`, the OSU Micro-Benchmarks, DART, and Kokkos. If they pass and publishing is on, the step "Publish Image" builds `containers/publish/Dockerfile` on top of it, which adds OSU and its app contract and attaches a Software Bill of Materials (`sbom: true`), and pushes the public tags:
 
 ```
-ncarcisl/hpcdev-x86_64:almalinux9-gcc-openmpi-latest
+PUBLISH_REPO=${REPO}-${{ inputs.arch }}       # REPO is docker_repo, lower-cased
+PUBLISH_TAG=${PUBLISH_REPO}:${{ inputs.os }}${COMPILER_LABEL}${MPI_LABEL}${GPU_LABEL}${CONDA_LABEL}-latest
 ```
 
-The cached image can be used as a layer for the next image for BuildKit to use to add layers, while the published one appears in the Docker Hub for users to pull. This matters because the Dockerfile builds expensive HPC libraries from source. Without a cache, small changes could force long rebuilds of compilers, MPI, HDF5, NetCDF, FFT libraries, and related toolchain dependencies. The layering input and output is defined in `cache-from:` and `cache-to:` in the "BaseOS + Toolkits + Compiler + MPI Image" workflow. 
-
-The build-args: block in the workflow becomes Docker/BuildKit --build-arg KEY=VALUE inputs in the GHA and some are fed in by the calling workflow, for example matrix-build-images.yaml. In the Dockerfile they show up as ARG declarations, for example at the top of the Dockerfile. For a typical almalinux9 + gcc + openmpi + nogpu build, this might effectively become:
+for example
 
 ```
-BASE_OS=almalinux9
+ghcr.io/ncar/hpcdev-x86_64:leap-gcc14-openmpi-latest
+ghcr.io/ncar/hpcdev-x86_64:leap-gcc14-openmpi-26.10
+```
+
+The repository name is lower-cased because GHCR requires it and `github.repository_owner` is `NCAR`. Finally, the contract check runs again on the published image with `--published`.
+
+The cache reuses layers up to the first stage whose inputs changed. This matters because the Dockerfile builds expensive HPC libraries from source: without a cache, small changes would force long rebuilds of compilers, MPI, HDF5, NetCDF, FFT libraries, and related dependencies. An edit to the final stage or to `scripts/` rebuilds in seconds; an edit to `base_os` rebuilds everything. The cache reference has no branch in it, so a branch build reuses `main`'s layers. The cache is written only when a build succeeds.
+
+The `build-args:` block becomes `--build-arg KEY=VALUE` inputs, some fed in by the calling workflow; in the Dockerfile they are `ARG` declarations. For a leap + gcc14 + openmpi + nogpu build from `cluster-images-ghcr.yaml`, this effectively becomes:
+
+```
+BASE_OS=leap
 FINAL_TARGET=fftlibs
 MINIFORGE_PREREQ=base_os
+TOOLKITS_PREREQ=no-miniforge
 HDF5_VERSION=1.14.5
 NETCDF_C_VERSION=4.10.0
 NETCDF_FORTRAN_VERSION=4.6.3
@@ -416,83 +422,59 @@ PIO_VERSION=2.6.7
 PIO_TAG=pio2_6_7
 FFTW_VERSION=3.3.10
 HEFFTE_VERSION=2.4.1
-COMPILER_FAMILY=os-gcc
+COMPILER_FAMILY=gcc
+GCC_VERSION=14.3.0
 MPI_FAMILY=openmpi
 OPENMPI_VERSION=5.0.10
 ```
 
-### Build HPC Development Images
-
-This drives the building of several Docker images based on multiple parameters and lists.  The workflow file is
+### Build the Clusters' Image Set
 
 ```text
-.github/workflows/matrix-build-images.yaml
+.github/workflows/cluster-images-ghcr.yaml
 ```
 
-- Purpose: Main production matrix build workflow across compilers, MPI stacks, GPU options, and architectures.
+- Purpose: the six portable images NCAR's clusters use, leap x {oneapi, gcc14, nvhpc} x {mpich, openmpi}, built in parallel.
+- Triggers: `workflow_dispatch`; `publish` is off by default.
+
+It is also the quickest way to validate a change to the factory. Push the branch, then
+
+```bash
+gh workflow run cluster-images-ghcr.yaml --ref <branch> -f publish=false
+```
+
+builds and tests all six against the three compiler families that matter, in about the time of one build. Batch related changes into one branch and validate them this way, rather than with a build per change.
+
+### Build HPC Development Images (full matrix)
+
+```text
+.github/workflows/matrix-build-images-ghcr.yaml
+```
+
+- Purpose: the full matrix across compilers, MPI stacks, GPU options, and architectures, for one base OS per dispatch.
 - Triggers: `workflow_dispatch`.
-- Key GHA jobs:
-  - `build-matrix`: Calls the reusable build workflow for full matrix combinations.
+- Key job: `build-matrix`, which calls the reusable workflow for each combination.
 
-It defines the full production matrix. It expands across compiler, MPI, GPU, architecture, and operating-system combinations. 
-
+```text
 matrix workflow
   -> reusable workflow inputs
   -> docker/build-push-action build-args
   -> Dockerfile ARG declarations
   -> selected stages, package versions, build behavior
   -> selected values optionally exported into /container/config_env.sh
-
-### Development Matrix
-
-The workflow:
-
-```text
-.github/workflows/devel-build-images.yaml
 ```
 
-- Purpose: Development/PR matrix build of selected compiler/OS/MPI combinations, followed by in-container app smoke tests.
-- Triggers: `workflow_dispatch`, `pull_request` (Dockerfile and scripts paths).
-- Key jobs:
-  - `build-matrix`: Calls the reusable build workflow for a reduced validation matrix.
-  - `apps-matrix`: Waits on `build-matrix`, then compiles/tests apps inside built images.
-
-Runs on pull requests that touch the Dockerfile, scripts, or related workflow files. It uses a reduced matrix intended to validate common and important combinations without incurring the full cost of the production matrix.
-
-This workflow is the primary validation path for routine container development and version-bump pull requests.
-
-### Dial-an-Image Workflow
-
-The workflow:
+### Dial-an-Image
 
 ```text
-.github/workflows/dial-an-image.yaml
+.github/workflows/dial-an-image-ghcr.yaml
 ```
 
-- Purpose: On-demand single-variant builder to reproduce and iterate quickly on one configuration.
+- Purpose: on-demand single-variant builder, to reproduce and iterate quickly on one configuration, or to build a stand-in for a particular system.
 - Triggers: `workflow_dispatch`.
-- Key jobs:
-  - `build-image`: Calls the reusable build workflow using user-selected inputs.
+- Key job: `build-image`, which calls the reusable workflow with the selected inputs.
 
-It is the preferred tool for reproducing and debugging one failing combination without launching the full matrix.
-
-### trigger-workflows.yaml
-
-- Purpose: Orchestrator workflow that dispatches matrix builds for selected base operating systems.
-- Triggers: `workflow_dispatch`, monthly `schedule`, and closed `pull_request` on `main`.
-- Key jobs:
-  - `trigger-workflows`: Uses GitHub CLI to dispatch `matrix-build-images.yaml` multiple times.
-
-### container-build.yaml
-
-- Purpose: Validates software builds inside pre-existing container images (hello world, DART, optional Kokkos).
-- Triggers: `workflow_dispatch`, `push` to `ci_cd`.
-- Key jobs:
-  - `build-from-container-env`: Runs compile/test tasks in matrix-selected container runtimes.
-
-### Additional Workflows
-
-Other workflows include `conda-build.yaml`, `derived-containers.yaml`, log-cleanup schedules, and `mega-linter.yml`.
+It is the preferred tool for reproducing and debugging one failing combination without launching a whole matrix. It uses the Dockerfile's default library versions rather than the matrix's.
 
 ## Matrix Design Considerations
 
@@ -594,11 +576,11 @@ The container includes the diagnostic utility:
 /container/bin/report_cpu_features
 ```
 
-This tool reports the host's SIMD capability. When given an executable, it also attempts to identify the instruction set required by that binary by inspecting ELF notes and scanning disassembly output.
+This tool reports the host's SIMD capability. When given an executable, it also reports the instruction set that binary requires, by inspecting ELF notes and scanning the disassembly function by function. Its `AVX-512 required` line counts AVX-512 instructions on any register width, but not those in routines that choose their code from the CPU at run time, such as Intel's SVML or OpenBLAS's kernels. Other tools read its output, so its wording is part of the contract.
 
 This tool is particularly useful for diagnosing `Illegal instruction` failures. Such failures often indicate that a binary was built for a newer CPU target than the runtime host supports.
 
-The hello-world smoke tests in the development and matrix-smoketest workflows call this utility so that over-targeted binaries are visible before they fail at runtime.
+`build_report-placement.sh`, `containers/test`, and the contract check call this utility so that over-targeted binaries are visible before they fail at runtime.
 
 ## Debugging CI Failures
 
@@ -628,16 +610,16 @@ gh api --paginate \
   -q '.jobs[].name'
 ```
 
-Because `matrix-build-images.yaml` is manually dispatched one base operating system at a time and uses `max-parallel: 16`, jobs appear in waves. A partial job list early in the run is normal and does not necessarily indicate that matrix entries were dropped.
+Because `matrix-build-images-ghcr.yaml` is manually dispatched one base operating system at a time and uses `max-parallel: 16`, jobs appear in waves. A partial job list early in the run is normal and does not necessarily indicate that matrix entries were dropped.
 
 ## Maintenance Guidelines
 
 When maintaining this repository, follow these guidelines:
 
-1. Treat `containers/devenv/Dockerfile` as the primary implementation file for the HPC development image.
+1. Treat `containers/devenv/Dockerfile` as the primary implementation file for the HPC development image, and [CONTRACT.md](CONTRACT.md) as its interface: change a promise only together with `check_base_contract.sh`, and say so in the pull request.
 2. Treat the GitHub Actions matrices as the authoritative source for CI build versions.
-3. Validate routine changes through `devel-build-images.yaml` before running the full production matrix.
-4. Use `dial-an-image.yaml` to reproduce a single failing variant.
+3. Validate routine changes with one `cluster-images-ghcr.yaml` dispatch from the branch before running the full matrix.
+4. Use `dial-an-image-ghcr.yaml` to reproduce a single failing variant.
 5. Add new matrix values to the base matrix axes when full fan-out is required.
 6. Be cautious when changing system compiler versions, because they affect CUDA, NVHPC, and `os-gcc` behavior simultaneously.
 7. Prefer explicit compiler and language-standard settings over relying on compiler defaults.
