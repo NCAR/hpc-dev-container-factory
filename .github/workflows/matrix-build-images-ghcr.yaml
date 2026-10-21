@@ -116,7 +116,7 @@ jobs:
               COMPILER_FAMILY=aocc
 
           # for NVHPC, we can specify a different CUDA if it suits us.
-          # (since the compiler args come after gpu args in build-hpc-development-image.yaml we are relying on precedence)
+          # (since the compiler args come after gpu args in build-hpc-dev-image-ghcr.yaml we are relying on precedence)
           - compiler: nvhpc
             arch: x86_64
             compiler_build_args: |
