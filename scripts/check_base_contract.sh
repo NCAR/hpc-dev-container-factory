@@ -221,9 +221,41 @@ else
     fail "FFTW_ROOT is unset or missing ('${FFTW_ROOT:-}')"
 fi
 
+# 9. Portable: nothing the image built needs more than its architecture's
+#    baseline (or nvhpc's -tp).  A compile that loses its flags targets the
+#    build runner's CPU under nvc, and the image then dies with SIGILL elsewhere
+#    -- as Open MPI 5.0.10's PRRTE did (issue #5).  Not scanned: the compilers,
+#    CUDA/ROCm and Miniforge, which are not ours; OpenBLAS and FFTW, which
+#    dispatch (check 8 covers FFTW's MPI part); and Open MPI's libmpi, whose
+#    op/avx component checks the CPU before it runs.
+if [ -x /container/bin/report_cpu_features ]; then
+    nscan=0
+    : > "${work}/wide.txt"
+    while IFS= read -r -d '' f; do
+        [ "$(head -c 4 "${f}" 2>/dev/null)" = $'\x7fELF' ] || continue
+        case "${MPI_FAMILY:-}:${f##*/}" in openmpi:libmpi.so*) continue ;; esac
+        nscan=$((nscan + 1))
+        wide="$(/container/bin/report_cpu_features "${f}" 2>/dev/null | sed -n 's/^ *\(.*\) required: YES.*/\1/p')"
+        [ -n "${wide}" ] && echo "${f} needs ${wide}" >> "${work}/wide.txt"
+    done < <(find /container -xdev \
+                 \( -path /container/nvhpc -o -path /container/intel-oneapi -o -path /container/aocc \
+                    -o -path /container/llvm -o -path /container/gcc -o -path /container/cuda \
+                    -o -path /container/rocm -o -path /container/miniforge \
+                    -o -path /container/openblas -o -path /container/fftw \) -prune \
+                 -o -type f \( -name '*.so*' -o -perm -u+x \) -print0)
+    if [ -s "${work}/wide.txt" ]; then
+        fail "$(wc -l < "${work}/wide.txt") of ${nscan} ELF files need more than the portable target -- built for the build runner's CPU:"
+        sed 's/^/      /' "${work}/wide.txt"
+    else
+        pass "${nscan} ELF files under /container need no more than the portable target"
+    fi
+else
+    skip "portability scan: /container/bin/report_cpu_features is missing (check 5)"
+fi
+
 echo "== the factory's own promises =="
 
-# 9. conda, as asked for
+# 10. conda, as asked for
 if [ -d /container/miniforge ]; then has_conda=true; else has_conda=false; fi
 case "${EXPECT_CONDA:-}" in
     true|false)
@@ -235,7 +267,7 @@ case "${EXPECT_CONDA:-}" in
     *)  info "Miniforge present: ${has_conda}" ;;
 esac
 
-# 10. plainuser owns a few entries, not the tree.  A recursive chown stores a
+# 11. plainuser owns a few entries, not the tree.  A recursive chown stores a
 #     second copy of every file under /container in the final layer.
 if id plainuser >/dev/null 2>&1; then
     owned="$(find /container -xdev -user plainuser 2>/dev/null | head -n 1001 | wc -l)"
