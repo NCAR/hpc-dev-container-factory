@@ -226,14 +226,16 @@ fi
 #    build runner's CPU under nvc, and the image then dies with SIGILL elsewhere
 #    -- as Open MPI 5.0.10's PRRTE did (issue #5).  Not scanned: the compilers,
 #    CUDA/ROCm and Miniforge, which are not ours; OpenBLAS and FFTW, which
-#    dispatch (check 8 covers FFTW's MPI part); and Open MPI's libmpi, whose
-#    op/avx component checks the CPU before it runs.
+#    dispatch (check 8 covers FFTW's MPI part); and libmpi, which under both
+#    MPIs builds one AVX-512 file and checks the CPU before calling it (Open
+#    MPI's op/avx, MPICH's MPL_Memcpy_stream_avx512f).  Its symbols are stripped,
+#    so report_cpu_features cannot tell that code from an unguarded build.
 if [ -x /container/bin/report_cpu_features ]; then
     nscan=0
     : > "${work}/wide.txt"
     while IFS= read -r -d '' f; do
         [ "$(head -c 4 "${f}" 2>/dev/null)" = $'\x7fELF' ] || continue
-        case "${MPI_FAMILY:-}:${f##*/}" in openmpi:libmpi.so*) continue ;; esac
+        case "${f##*/}" in libmpi.so*) continue ;; esac
         nscan=$((nscan + 1))
         wide="$(/container/bin/report_cpu_features "${f}" 2>/dev/null | sed -n 's/^ *\(.*\) required: YES.*/\1/p')"
         [ -n "${wide}" ] && echo "${f} needs ${wide}" >> "${work}/wide.txt"
