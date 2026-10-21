@@ -37,6 +37,12 @@ their architecture. nvhpc's `nvc` has no portable default, so its images are
 built `-tp=x86-64-v3` (AVX2) on x86_64. Tuning belongs to the layer built on
 top, through `MARCH_FLAGS` or an app's own flags.
 
+The check holds only the base's own ELF files to that promise. The factory
+lists them in `/container/extras/base-elf.list` as its last build step, and the
+check scans that list, so in an image built on this one it passes whatever
+target the new layer was built for. A layer that replaces a listed file in
+place is held to the promise for that file.
+
 `ghcr.io/ncar/hpcdev-<arch>-cache` holds build cache and CI intermediates. It
 is not part of the contract.
 

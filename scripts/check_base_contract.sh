@@ -12,13 +12,49 @@
 # --published   also require what only the publish stage adds (OSU and its app
 #               contract).  Without it, their absence is a SKIP.
 #
+# --record      write the ELF files this image installed, the ones check 9
+#               scans, to /container/extras/base-elf.list, and exit.  The
+#               factory runs it last in each stage that installs files, so an
+#               image built on this one is checked against the base's files
+#               only: its own layer may target a CPU by design.
+#
 # EXPECT_CONDA=true|false, if set, checks that Miniforge is present or absent.
 #
 # Prints one line per check, PASS / FAIL / SKIP / INFO, and exits non-zero if
 # anything FAILed.
 #-------------------------------------------------------------------------------
-published=0
-[ "${1:-}" = "--published" ] && published=1
+published=0 record=0
+case "${1:-}" in
+    --published) published=1 ;;
+    --record)    record=1 ;;
+esac
+base_elf_list=/container/extras/base-elf.list
+
+# The ELF files check 9 holds to the portable target, one per line.  Not
+# scanned: the compilers, CUDA/ROCm and Miniforge, which are not ours; OpenBLAS
+# and FFTW, which dispatch (check 8 covers FFTW's MPI part); and libmpi, which
+# under both MPIs builds one AVX-512 file and checks the CPU before calling it
+# (Open MPI's op/avx, MPICH's MPL_Memcpy_stream_avx512f).  Its symbols are
+# stripped, so report_cpu_features cannot tell that code from an unguarded build.
+portable_elf_files () {
+    find /container -xdev \
+         \( -path /container/nvhpc -o -path /container/intel-oneapi -o -path /container/aocc \
+            -o -path /container/llvm -o -path /container/gcc -o -path /container/cuda \
+            -o -path /container/rocm -o -path /container/miniforge \
+            -o -path /container/openblas -o -path /container/fftw \) -prune \
+         -o -type f \( -name '*.so*' -o -perm -u+x \) -print0 \
+    | while IFS= read -r -d '' f; do
+          [ "$(head -c 4 "${f}" 2>/dev/null)" = $'\x7fELF' ] || continue
+          case "${f##*/}" in libmpi.so*) continue ;; esac
+          printf '%s\n' "${f}"
+      done
+}
+
+if [ "${record}" = 1 ]; then
+    portable_elf_files | sort > "${base_elf_list}" || exit 1
+    echo "recorded $(wc -l < "${base_elf_list}") ELF files in ${base_elf_list}"
+    exit 0
+fi
 
 [ -r /container/config_env.sh ] && source /container/config_env.sh
 
@@ -221,36 +257,35 @@ else
     fail "FFTW_ROOT is unset or missing ('${FFTW_ROOT:-}')"
 fi
 
-# 9. Portable: nothing the image built needs more than its architecture's
+# 9. Portable: nothing the base built needs more than its architecture's
 #    baseline (or nvhpc's -tp).  A compile that loses its flags targets the
 #    build runner's CPU under nvc, and the image then dies with SIGILL elsewhere
-#    -- as Open MPI 5.0.10's PRRTE did (issue #5).  Not scanned: the compilers,
-#    CUDA/ROCm and Miniforge, which are not ours; OpenBLAS and FFTW, which
-#    dispatch (check 8 covers FFTW's MPI part); and libmpi, which under both
-#    MPIs builds one AVX-512 file and checks the CPU before calling it (Open
-#    MPI's op/avx, MPICH's MPL_Memcpy_stream_avx512f).  Its symbols are stripped,
-#    so report_cpu_features cannot tell that code from an unguarded build.
+#    -- as Open MPI 5.0.10's PRRTE did (issue #5).  Scans the files --record
+#    listed, so a layer built on top, which may target a CPU on purpose, is not
+#    held to it; see portable_elf_files for what is left out.
 if [ -x /container/bin/report_cpu_features ]; then
-    nscan=0
+    if [ -r "${base_elf_list}" ]; then
+        scope="the base's, from ${base_elf_list}"
+        cat "${base_elf_list}" > "${work}/elf.txt"
+    else
+        scope="every layer under /container: no ${base_elf_list}"
+        portable_elf_files > "${work}/elf.txt"
+    fi
+    nscan=0 ngone=0
     : > "${work}/wide.txt"
-    while IFS= read -r -d '' f; do
-        [ "$(head -c 4 "${f}" 2>/dev/null)" = $'\x7fELF' ] || continue
-        case "${f##*/}" in libmpi.so*) continue ;; esac
+    while IFS= read -r f; do
+        [ -f "${f}" ] || { ngone=$((ngone + 1)); continue; }
         nscan=$((nscan + 1))
         wide="$(/container/bin/report_cpu_features "${f}" 2>/dev/null | sed -n 's/^ *\(.*\) required: YES.*/\1/p')"
         [ -n "${wide}" ] && echo "${f} needs ${wide}" >> "${work}/wide.txt"
-    done < <(find /container -xdev \
-                 \( -path /container/nvhpc -o -path /container/intel-oneapi -o -path /container/aocc \
-                    -o -path /container/llvm -o -path /container/gcc -o -path /container/cuda \
-                    -o -path /container/rocm -o -path /container/miniforge \
-                    -o -path /container/openblas -o -path /container/fftw \) -prune \
-                 -o -type f \( -name '*.so*' -o -perm -u+x \) -print0)
+    done < "${work}/elf.txt"
     if [ -s "${work}/wide.txt" ]; then
-        fail "$(wc -l < "${work}/wide.txt") of ${nscan} ELF files need more than the portable target -- built for the build runner's CPU:"
+        fail "$(wc -l < "${work}/wide.txt") of ${nscan} ELF files (${scope}) need more than the portable target -- built for the build runner's CPU:"
         sed 's/^/      /' "${work}/wide.txt"
     else
-        pass "${nscan} ELF files under /container need no more than the portable target"
+        pass "${nscan} ELF files (${scope}) need no more than the portable target"
     fi
+    [ "${ngone}" -gt 0 ] && info "${ngone} file(s) in ${base_elf_list} are no longer in the image"
 else
     skip "portability scan: /container/bin/report_cpu_features is missing (check 5)"
 fi

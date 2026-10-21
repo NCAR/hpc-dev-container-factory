@@ -190,7 +190,9 @@ them with one `cluster-images-ghcr` dispatch rather than a build per change.
   on the `make` line in the `openmpi` stage), and CMake reads Fortran flags from
   `FFLAGS`, not `FCFLAGS` (exported in the `compilers` stage). Both shipped
   unguarded AVX-512 (issue #5); `check_base_contract.sh` check 9 now scans every
-  ELF file the image built. Note
+  ELF file the base built, as listed by `--record` in `/container/extras/base-elf.list`
+  at the end of the final and publish stages (so an app layer tuned on top is not
+  held to it). Note
   `-march=x86-64-v3` does not merely underperform on the `aarch64` axis, it fails
   to compile. Note `nvc -V` prints the
   *default* `-tp`, not the per-compile one — don't trust it; inspect the binary.
