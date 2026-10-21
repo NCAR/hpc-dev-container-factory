@@ -946,18 +946,27 @@ FROM ${COMPILER_FAMILY} AS compilers
 #           optimisation the moment we set CFLAGS to carry -march.  Naming -O2
 #           explicitly costs nothing and removes the trap.  Packages that set
 #           their own level -- HDF5 uses -O3 -- still win, since theirs comes last.
+#
+# FFLAGS is the one CMake reads for Fortran (CMAKE_Fortran_FLAGS); FCFLAGS and
+# F77FLAGS are not.  Without it ParallelIO's Fortran got no -tp under nvhpc and
+# was built for the build runner's CPU (issue #5).  It is set here, not in the
+# nvhpc stage, so the fix does not re-download the SDK; and only when there is
+# something to carry, since a set-but-empty FFLAGS also suppresses autoconf's
+# -O2 default.
 #-------------------------------------------------------------------------------
 ARG COMPILER_FAMILY
 ARG MARCH_FLAGS=""
 RUN echo "Setting ${COMPILER_FAMILY} compiler layer (MARCH_FLAGS=${MARCH_FLAGS:-<none>})" \
     && case "${COMPILER_FAMILY}" in \
-         nvhpc) : ;; \
+         nvhpc) source /container/config_env.sh \
+            && add_conf "export FFLAGS=\"\${FCFLAGS}\"" ;; \
          *) source /container/config_env.sh \
             && add_conf "export MARCH_FLAGS=\"${MARCH_FLAGS}\"" \
             && if [ -n "${MARCH_FLAGS}" ]; then \
                    add_conf "export CFLAGS=\"-O2 ${MARCH_FLAGS}\"" ; \
                    add_conf "export CXXFLAGS=\"-O2 ${MARCH_FLAGS}\"" ; \
                    add_conf "export F77FLAGS=\"-O2 ${MARCH_FLAGS}\"" ; \
+                   add_conf "export FFLAGS=\"-O2 ${MARCH_FLAGS}\"" ; \
                    add_conf "export FCFLAGS=\"-O2 ${MARCH_FLAGS}\"" ; \
                fi ;; \
        esac
@@ -1116,6 +1125,14 @@ FROM compilers AS openmpi
 #
 #   OMPI_ALLOW_RUN_AS_ROOT: distasteful; but unless we want to deal with multiple UIDs in the build/test process we'll allow
 #     https://docs.open-mpi.org/en/v5.0.x/man-openmpi/man1/mpirun.1.html#the-allow-run-as-root-option
+#
+#   *_CFLAGS_BEFORE_PICKY: three bundled directories -- PRRTE's util/hostfile and
+#     rmaps/rank_file, PMIx's util/keyval -- set CFLAGS = $(PRTE_CFLAGS_BEFORE_PICKY)
+#     or $(PMIX_CFLAGS_BEFORE_PICKY), which configure never substitutes (5.0.10).
+#     Their CFLAGS is then empty: no -O, and no -tp, so nvc targets the BUILD
+#     runner's CPU.  On an AVX-512 runner that put unguarded %zmm stores in
+#     libprrte, and mpiexec died with SIGILL on Zen 3 (issue #5).  Defining both
+#     on the make line reaches every sub-make and changes no other directory.
 #-------------------------------------------------------------------------------
 ARG OPENMPI_VERSION="5.0.10"
 ENV OPENMPI_VERSION="${OPENMPI_VERSION}"
@@ -1133,7 +1150,9 @@ RUN exec &> >(tee /container/logs/openmpi.log) \
            --disable-static --enable-shared \
            --disable-dependency-tracking \
             || cat config.log) \
+    && picky_cflags="-O3 -DNDEBUG ${CFLAGS}" \
     && make --no-print-directory --jobs ${MAKE_J_PROCS} V=0 \
+            PRTE_CFLAGS_BEFORE_PICKY="${picky_cflags}" PMIX_CFLAGS_BEFORE_PICKY="${picky_cflags}" \
     && make --no-print-directory --silent install-strip \
     && cd ${OPENMPI_INSTALL_PATH} \
     && rm_paths="share/doc/" \

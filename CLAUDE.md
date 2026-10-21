@@ -184,7 +184,13 @@ them with one `cluster-images-ghcr` dispatch rather than a build per change.
   is how four of the six Derecho images ended up baseline `x86-64` with no AVX2.
   Leave it empty here: this factory publishes portable images only, and a tuned
   build belongs to the app layer. The one exception is nvhpc on x86_64, which gets
-  `-tp=x86-64-v3` because nvc has no portable default. Note
+  `-tp=x86-64-v3` because nvc has no portable default. The same trap fires
+  whenever a build **loses** the flags: Open MPI 5.0.10's bundled PRRTE/PMIx set
+  `CFLAGS` to an unsubstituted `*_CFLAGS_BEFORE_PICKY` in three directories (fixed
+  on the `make` line in the `openmpi` stage), and CMake reads Fortran flags from
+  `FFLAGS`, not `FCFLAGS` (exported in the `compilers` stage). Both shipped
+  unguarded AVX-512 (issue #5); `check_base_contract.sh` check 9 now scans every
+  ELF file the image built. Note
   `-march=x86-64-v3` does not merely underperform on the `aarch64` axis, it fails
   to compile. Note `nvc -V` prints the
   *default* `-tp`, not the per-compile one — don't trust it; inspect the binary.
