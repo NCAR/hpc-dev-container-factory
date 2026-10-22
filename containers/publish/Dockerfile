@@ -24,6 +24,10 @@ RUN echo "Publishing Production Image from ${BASE_IMAGE} ..." \
     && echo "# ${PUBLISH_IMAGE_TAG} created on $(date)" >> /container/config_env.sh \
     && docker-clean
 
+# Re-record the base's ELF files (check_base_contract.sh check 9), now with what
+# the deployment scripts added.  A RUN of its own: the loop above ends in exec.
+RUN /container/extras/check_base_contract.sh --record
+
 # Local Variables:
 # mode: sh
 # End:

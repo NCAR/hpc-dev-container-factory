@@ -1655,6 +1655,7 @@ RUN exec &> >(tee /container/logs/final.log) \
     && useradd plainuser -d /home/plainuser \
     && echo "plainuser 	ALL=(ALL)	NOPASSWD: ALL" >> /etc/sudoers \
     && chown plainuser: /container/ /container/config_env.sh /container/logs/ \
+    && /container/extras/check_base_contract.sh --record \
     && cat /container/config_env.sh
 
 # ref: https://spack.readthedocs.io/en/latest/containers.html
