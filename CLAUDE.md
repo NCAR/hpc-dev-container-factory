@@ -223,7 +223,9 @@ them with one `cluster-images-ghcr` dispatch rather than a build per change.
 - **Conda is off by default.** On (`conda: true`), the tag and cache key gain `-conda`, so
   one tag means one image.
 - **A base image's ENTRYPOINT re-splits its arguments.** It is
-  `bash --rcfile /container/config_env.sh --login -c '${*}' --`, so
+  `bash --login -c '${*}' --` (the login shell sources `config_env.sh` via
+  `/etc/profile.d/z00-build-env.sh`; bash ignores `--rcfile` for a login shell,
+  so don't add one back), so
   `docker run <img> bash -lc '<script>'` runs only the script's first word. Pass the
   command as plain words (`docker run <img> /container/extras/check_base_contract.sh`); the entrypoint
   is already a login shell.
