@@ -343,6 +343,7 @@ jobs:
         run: |
           docker run --rm --env-file test_env.cfg \
             --env EXPECT_CONDA=${{ inputs.conda }} \
+            --env EXPECT_GPU=${{ inputs.gpu }} \
             ${{ env.CI_TAG }} \
             /container/extras/check_base_contract.sh
 
@@ -424,6 +425,7 @@ jobs:
         run: |
           docker run --rm --env-file test_env.cfg \
             --env EXPECT_CONDA=${{ inputs.conda }} \
+            --env EXPECT_GPU=${{ inputs.gpu }} \
             ${{ env.PUBLISH_TAG }} \
             /container/extras/check_base_contract.sh --published
 

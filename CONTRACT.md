@@ -26,7 +26,8 @@ ghcr.io/ncar/hpcdev-<arch>:<os>-<compiler>-<mpi>[-<gpu>][-conda]-<YY.MM>
 - `<compiler>` is the matrix's name for it: `gcc` is the distribution's own
   gcc, `gcc14` is gcc 14 built from source, and `oneapi`, `nvhpc` and `aocc`
   are what they say.
-- `<gpu>` is absent for CPU-only images, otherwise `cuda`.
+- `<gpu>` is absent for CPU-only images, otherwise `cuda`. Section 5 says
+  what a `-cuda` image adds.
 - `-conda` is present only when the image carries Miniforge. Images are built
   without it by default.
 - `-latest` moves; `-<YY.MM>` is the month it was built, and is overwritten by
@@ -120,11 +121,48 @@ dispatch at run time, which is why these two are built that way: a portable
 image then delivers AVX-512 where it pays without an image per node type. What
 dispatch cannot reach is an app's own loops; build those with the app's flags.
 
-## 5. Not promised
+## 5. GPU images
+
+An image tagged `-cuda` carries the CUDA toolkit under everything above, and
+promises the following besides. The rest of the contract holds unchanged.
+
+- **The toolkit.** `CUDA_HOME` and `CUDA_VERSION` are exported, and `nvcc`
+  and `cuobjdump` are on `PATH`.
+- **Its libraries resolve without `config_env.sh`.** `libcudart`, `libcublas`,
+  `libcublasLt`, `libcufft` and `libcurand` are in the dynamic linker's cache.
+  A launcher that replaces `LD_LIBRARY_PATH` with the host's MPI libraries --
+  the usual way to run on a cluster -- still finds them.
+- **Device code is portable.** `NVCC_PREPEND_FLAGS` carries
+  `-arch=all-major`, so code built with `nvcc` carries machine code for every
+  major GPU architecture the toolkit supports. Tuning belongs to the layer built
+  on top: an app's own `-arch=sm_80` replaces it (nvcc warns of the
+  redefinition, and the last value wins).
+- **The driver is the host's.** The image holds the driver's stubs
+  (`libcuda.so.1`, `libnvidia-ml.so.1`) in the linker cache, so it links and
+  starts on a machine with no GPU. At run time the host's driver must come
+  first: `apptainer exec --nv`, or the host's library directory ahead on
+  `LD_LIBRARY_PATH`. Without it CUDA reports `CUDA driver is a stub library`.
+- **`/container/bin/report_gpus`** reports, one `report_gpus:` line each, the
+  devices this process sees, with their PCI bus, NUMA domain and UUID. It also
+  reports which `libcuda` loaded, the driver and runtime versions, the
+  process's CPUs and `CUDA_VISIBLE_DEVICES`, and whether a kernel ran. It is not
+  an MPI program: launched once per rank, each copy names its rank from the
+  launcher's environment. It exits 0 when a kernel ran and 2 when no device is
+  usable. Its keys keep their spelling, as `report_cpu_features`'s lines do.
+- **HeFFTe is the CUDA build** (`HEFFTE_ROOT` ends `-cuda`), with its CUDA
+  backend built for sm_80 and sm_90.
+
+The MPI in a `-cuda` image is built with CUDA support. As section 6 says of any
+MPI, the host's usually replaces it on a cluster, and whether that one is
+GPU-aware is the cluster's business.
+
+## 6. Not promised
 
 - Miniforge (conda). Present only in a `-conda` image.
-- Any particular version of a compiler, MPI or library. They are in the
-  image's labels (`docker inspect`) and in `config_env.sh`.
+- Any particular version of a compiler, MPI or library, CUDA included. They are
+  in the image's labels (`docker inspect`) and in `config_env.sh`.
+- A GPU image for every combination. The `-cuda` images built are the ones the
+  workflows list.
 - That the MPI in the image is the one that runs. On a cluster the host's MPI
   usually replaces it at run time; build against the wrappers, and do not
   depend on the implementation's internals.
