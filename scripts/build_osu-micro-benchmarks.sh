@@ -22,6 +22,13 @@ case "|${CUDA_HOME}|${ROCM_HOME}|" in
     "|"*"cuda"*"|")
         CUDA_LIBS="-lcuda -lcudart"
         extra_args="--enable-cuda ${extra_args}"
+        # OSU builds its CUDA kernels in two steps, `nvcc -cuda` and then $CXX on
+        # the result, and nvc++ 26.x rejects that output however it is flagged
+        # (OSU's own --nvcchost --no_preincludes, keyed on `pgc++`, included).
+        # Without the kernels, device buffers (D D, -d cuda, -d managed) still
+        # work; only point-to-point managed buffers (MD, MH) and the GPU compute
+        # in the overlap tests go.
+        [ "${COMPILER_FAMILY}" = "nvhpc" ] && extra_args="--enable-cuda=basic"
         ;;
     "|"*"rocm"*"|")
         ROCM_LIBS="-lamdhip64"
@@ -50,7 +57,8 @@ curl --retry 3 --retry-delay 5 -sSL https://mvapich.cse.ohio-state.edu/download/
            LIBS="${CUDA_LIBS} ${ROCM_LIBS}" \
     && make --no-print-directory --jobs ${MAKE_J_PROCS:-$(nproc)} V=0 \
     && make --no-print-directory --silent install-strip  \
-    && docker-clean
+    && docker-clean \
+    || { echo "OSU-Micro-Benchmarks ${OMB_VERSION} failed to build"; exit 1; }
 
 cd ${topdir}
 
@@ -80,7 +88,7 @@ if [ -d "${app_src}" ]; then
     echo "installed app contract: ${INSTALL_ROOT}/app.d/osu"
 fi
 
-ldd ${INSTALL_ROOT}/osu-micro-benchmarks/${OMB_VERSION}/libexec/osu-micro-benchmarks/mpi/pt2pt/osu_latency
+ldd ${INSTALL_ROOT}/osu-micro-benchmarks/${OMB_VERSION}/libexec/osu-micro-benchmarks/mpi/pt2pt/osu_latency || exit 1
 mpiexec -n 2 ${mpiexec_args} ${INSTALL_ROOT}/osu-micro-benchmarks/${OMB_VERSION}/libexec/osu-micro-benchmarks/mpi/pt2pt/osu_latency
 mpiexec -n 2 ${mpiexec_args} ${INSTALL_ROOT}/osu-micro-benchmarks/${OMB_VERSION}/libexec/osu-micro-benchmarks/mpi/pt2pt/osu_bibw
 mpiexec -n ${NRANKS} ${mpiexec_args} ${INSTALL_ROOT}/osu-micro-benchmarks/${OMB_VERSION}/libexec/osu-micro-benchmarks/mpi/collective/osu_alltoallw || true
