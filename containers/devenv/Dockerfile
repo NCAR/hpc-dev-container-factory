@@ -1659,7 +1659,10 @@ RUN exec &> >(tee /container/logs/final.log) \
     && cat /container/config_env.sh
 
 # ref: https://spack.readthedocs.io/en/latest/containers.html
-ENTRYPOINT ["/bin/bash", "--rcfile", "/container/config_env.sh", "--login", "-c", "${*}", "--" ]
+#  A login shell reads /etc/profile, which sources config_env.sh through
+#  /etc/profile.d/z00-build-env.sh; the command it runs inherits the exports.
+#  (No --rcfile: bash ignores it for a login shell.)
+ENTRYPOINT ["/bin/bash", "--login", "-c", "${*}", "--" ]
 CMD [ "/bin/bash" ]
 
 # Many github actions do not work as a regular user -- alas, stay root for now.

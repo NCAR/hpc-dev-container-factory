@@ -50,13 +50,15 @@ is not part of the contract.
 
 - **`/container/config_env.sh`** sets the whole environment of the image:
   `PATH`, `CPATH`, `LIBRARY_PATH`, `LD_LIBRARY_PATH`, the compilers and each
-  library's root. Every login shell sources it. Anything run outside a login
-  shell -- `apptainer exec`, a non-login `docker run` -- should source it
-  first.
+  library's root. Every login shell sources it, through the link
+  `/etc/profile.d/z00-build-env.sh`. Anything run outside a login shell --
+  `apptainer exec`, `docker exec`, `docker run --entrypoint` -- should source
+  it first.
 - **The entrypoint is a login shell** that runs its arguments as one command
-  line: `bash --rcfile /container/config_env.sh --login -c '${*}' --`. Pass a
-  command as plain words (`docker run <img> mpicc --version`), not as
-  `bash -lc '<script>'`, which runs only the script's first word.
+  line: `bash --login -c '${*}' --`. The command inherits the environment the
+  login shell exported. Pass a command as plain words
+  (`docker run <img> mpicc --version`), not as `bash -lc '<script>'`, which
+  runs only the script's first word.
 - **`/container/extras/build_common.cfg`**, sourced by a build script, sets
   `INSTALL_ROOT` (`/container`) and `STAGE_DIR` (`/tmp`). Install under
   `${INSTALL_ROOT}` and build under `${STAGE_DIR}`.
