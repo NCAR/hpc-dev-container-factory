@@ -19,6 +19,7 @@
 #               only: its own layer may target a CPU by design.
 #
 # EXPECT_CONDA=true|false, if set, checks that Miniforge is present or absent.
+# EXPECT_GPU=cuda|nogpu, if set, checks that the CUDA runtime is present or absent.
 #
 # Prints one line per check, PASS / FAIL / SKIP / INFO, and exits non-zero if
 # anything FAILed.
@@ -290,9 +291,105 @@ else
     skip "portability scan: /container/bin/report_cpu_features is missing (check 5)"
 fi
 
+# 10. HeFFTe is on the dynamic linker's path, as section 4 promises of every
+#     library.  Its CMake install puts it in lib64/ on some distributions and
+#     lib/ on others, and heffte.conf once named the wrong one.
+if [ -n "${HEFFTE_ROOT:-}" ]; then
+    hlib="$(ldconfig -p 2>/dev/null | sed -n 's/^.*libheffte\.so[^ ]* .*=> //p' | head -1)"
+    case "${hlib}" in
+        "${HEFFTE_ROOT}"/*) pass "libheffte resolves through the linker cache: ${hlib}" ;;
+        "")                 fail "libheffte is not in the linker cache (HEFFTE_ROOT=${HEFFTE_ROOT})" ;;
+        *)                  fail "libheffte resolves to ${hlib}, not under HEFFTE_ROOT=${HEFFTE_ROOT}" ;;
+    esac
+else
+    fail "HEFFTE_ROOT is unset"
+fi
+
+# 11. GPU images (section 5).  EXPECT_GPU=cuda|nogpu, set by the build workflow
+#     from its gpu input, catches a CUDA image that lost its CUDA, and a CPU
+#     image that gained one.
+if [ -n "${CUDA_HOME:-}" ]; then has_gpu=cuda; else has_gpu=nogpu; fi
+case "${EXPECT_GPU:-}" in
+    cuda|nogpu)
+        if [ "${EXPECT_GPU}" = "${has_gpu}" ]; then
+            pass "GPU runtime: ${has_gpu}, as asked"
+        else
+            fail "GPU runtime: ${has_gpu}, but EXPECT_GPU=${EXPECT_GPU}"
+        fi ;;
+    *)  info "GPU runtime: ${has_gpu}" ;;
+esac
+if [ "${has_gpu}" = cuda ]; then
+    if [ -d "${CUDA_HOME}" ] && [ -n "${CUDA_VERSION:-}" ] && nvcc --version > "${work}/nvcc.txt" 2>&1; then
+        pass "CUDA_HOME=${CUDA_HOME}, CUDA_VERSION=${CUDA_VERSION}, nvcc $(sed -n 's/.*release \([0-9.]*\).*/\1/p' "${work}/nvcc.txt")"
+    else
+        fail "CUDA_HOME, CUDA_VERSION or nvcc is missing (CUDA_HOME='${CUDA_HOME}' CUDA_VERSION='${CUDA_VERSION:-}')"
+    fi
+
+    # The runtime libraries resolve through the linker cache, not only through
+    # LD_LIBRARY_PATH, which a host-MPI launcher replaces -- and not to stubs/.
+    for l in cudart cublas cublasLt cufft curand; do
+        hit="$(ldconfig -p 2>/dev/null | sed -n "s/^.*lib${l}\.so\.[0-9][^ ]* .*=> //p" | grep -v '/stubs/' | head -1)"
+        if [ -n "${hit}" ]; then
+            pass "lib${l} resolves through the linker cache: ${hit}"
+        else
+            fail "lib${l} is not in the linker cache outside stubs/"
+        fi
+    done
+
+    # Device code is built for every major architecture by default, and an
+    # app's own -arch= replaces that.
+    printf '__global__ void k(float *x) { x[threadIdx.x] *= 2.0f; }\nint main() { return 0; }\n' > "${work}/arch.cu"
+    if nvcc -o "${work}/all" "${work}/arch.cu" > "${work}/arch.log" 2>&1 \
+       && nvcc -arch=sm_90 -o "${work}/one" "${work}/arch.cu" >> "${work}/arch.log" 2>&1; then
+        all="$(cuobjdump --list-elf "${work}/all" 2>/dev/null | grep -o 'sm_[0-9]*' | sort -u -V | tr '\n' ' ')"
+        one="$(cuobjdump --list-elf "${work}/one" 2>/dev/null | grep -o 'sm_[0-9]*' | sort -u -V | tr '\n' ' ')"
+        if [[ " ${all}" == *" sm_80 "* && " ${all}" == *" sm_90 "* ]]; then
+            pass "nvcc builds for every major architecture by default (${all% })"
+        else
+            fail "nvcc's default architectures are '${all% }', not all-major (NVCC_PREPEND_FLAGS='${NVCC_PREPEND_FLAGS:-}')"
+        fi
+        if [ "${one}" = "sm_90 " ]; then
+            pass "an app's -arch=sm_90 replaces the default"
+        else
+            fail "nvcc -arch=sm_90 built for '${one% }', not sm_90 alone"
+        fi
+    else
+        fail "nvcc cannot compile a kernel"
+        sed 's/^/      /' "${work}/arch.log" | tail -n 20
+    fi
+
+    # report_gpus runs.  Where there is no GPU, or the host's driver is not
+    # visible, it says so and exits 2; that is the expected answer on a CI runner.
+    if [ -x /container/bin/report_gpus ]; then
+        /container/bin/report_gpus > "${work}/gpus.txt" 2>&1
+        rc=$?
+        head_line="$(grep -m1 '^report_gpus: .*devices=' "${work}/gpus.txt")"
+        if [ -z "${head_line}" ]; then
+            fail "report_gpus printed no header line (exit ${rc})"
+            sed 's/^/      /' "${work}/gpus.txt"
+        elif [ "${rc}" = 0 ]; then
+            pass "report_gpus: $(grep -c ' device=' "${work}/gpus.txt") device(s), $(sed -n 's/.* kernel=\([^ ]*\).*/kernel \1/p' "${work}/gpus.txt")"
+        elif [ "${rc}" = 2 ]; then
+            pass "report_gpus runs; no usable GPU here: $(sed -n 's/.*\(status="[^"]*"\).*/\1/p' <<< "${head_line}")"
+        else
+            fail "report_gpus exited ${rc}"
+            sed 's/^/      /' "${work}/gpus.txt"
+        fi
+    else
+        fail "/container/bin/report_gpus is missing"
+    fi
+
+    case "${HEFFTE_ROOT:-}" in
+        *-cuda) pass "HeFFTe is the CUDA build: ${HEFFTE_ROOT}" ;;
+        *)      fail "HEFFTE_ROOT='${HEFFTE_ROOT:-}' is not HeFFTe's CUDA build" ;;
+    esac
+else
+    skip "GPU checks: no CUDA in this image"
+fi
+
 echo "== the factory's own promises =="
 
-# 10. conda, as asked for
+# 12. conda, as asked for
 if [ -d /container/miniforge ]; then has_conda=true; else has_conda=false; fi
 case "${EXPECT_CONDA:-}" in
     true|false)
@@ -304,7 +401,7 @@ case "${EXPECT_CONDA:-}" in
     *)  info "Miniforge present: ${has_conda}" ;;
 esac
 
-# 11. plainuser owns a few entries, not the tree.  A recursive chown stores a
+# 13. plainuser owns a few entries, not the tree.  A recursive chown stores a
 #     second copy of every file under /container in the final layer.
 if id plainuser >/dev/null 2>&1; then
     owned="$(find /container -xdev -user plainuser 2>/dev/null | head -n 1001 | wc -l)"

@@ -65,7 +65,8 @@ only up to the first changed one. An edit to `base_os` (including its heredoc he
 rebuilds everything, ~35 min with a source-built gcc on a 4-core runner; an edit to `fftlibs` rebuilds ~3 min;
 an edit to the final stage or to `scripts/` (copied in there) rebuilds seconds. Put new
 tools that no build step needs in `scripts/` and install them in the final stage, as
-`report_cpu_features` is.
+`report_cpu_features` is. `report_gpus` (`scripts/report_gpus.cu`) is built there too, with
+`nvcc`, in a CUDA image only.
 
 **Environment accumulation:** stages append `export …` lines to `/container/config_env.sh`
 via the `add_conf` helper (PATH, CPATH, LIBRARY_PATH, LD_LIBRARY_PATH, CC/CXX/FC, CFLAGS).
@@ -118,6 +119,8 @@ have `include:` build-args.)
 - `cluster-images-ghcr.yaml` — the clusters' six portable images,
   leap × {oneapi, gcc14, nvhpc} × {mpich, openmpi}, in one dispatch. With `publish=false`,
   the quickest way to validate a factory change on a branch.
+  `gpu=cuda` builds the same six with CUDA, tagged `-cuda` (`CONTRACT.md` §5); its CUDA
+  version mirrors the full matrix's x86_64 `cuda` entry.
 - `matrix-build-images-ghcr.yaml` — full matrix (compilers × MPI × GPU × arch) for one OS.
 - `dial-an-image-ghcr.yaml` — one hand-picked variant; the fastest way to reproduce or
   iterate on one failing combination.

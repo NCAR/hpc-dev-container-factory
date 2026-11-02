@@ -1614,8 +1614,9 @@ RUN exec &> >(tee /container/logs/fftlibs.log) \
     && add_conf "export HEFFTE_ROOT=${HEFFTE_INSTALL_PATH}" \
     && add_conf "export PATH=${HEFFTE_INSTALL_PATH}/bin:\${PATH}" \
     && add_conf "export CPATH=${HEFFTE_INSTALL_PATH}/include:\${CPATH}" \
-    && add_conf "export LIBRARY_PATH=${HEFFTE_INSTALL_PATH}/lib64:\${LIBRARY_PATH}" \
-    && echo "${HEFFTE_INSTALL_PATH}/lib" >> /etc/ld.so.conf.d/heffte.conf \
+    && HEFFTE_LIBDIR=$(dirname "$(find ${HEFFTE_INSTALL_PATH} -name 'libheffte.so' | head -1)") \
+    && add_conf "export LIBRARY_PATH=${HEFFTE_LIBDIR}:\${LIBRARY_PATH}" \
+    && echo "${HEFFTE_LIBDIR}" >> /etc/ld.so.conf.d/heffte.conf \
     && ldconfig --verbose \
     && docker-clean
 LABEL fftw="${FFTW_VERSION}"
@@ -1652,6 +1653,11 @@ RUN exec &> >(tee /container/logs/final.log) \
     && ( command -v mpicxx >/dev/null 2>&1 \
          && REPORT_PLACEMENT_RUN=0 /container/extras/build_report-placement.sh \
          || echo "no mpicxx in this image; skipping report_placement" ) \
+    && if [ -n "${CUDA_HOME:-}" ]; then \
+           nvcc -O2 -o /container/bin/report_gpus /container/extras/report_gpus.cu || exit 1 ;\
+       else \
+           echo "no CUDA in this image; skipping report_gpus" ;\
+       fi \
     && useradd plainuser -d /home/plainuser \
     && echo "plainuser 	ALL=(ALL)	NOPASSWD: ALL" >> /etc/sudoers \
     && chown plainuser: /container/ /container/config_env.sh /container/logs/ \
