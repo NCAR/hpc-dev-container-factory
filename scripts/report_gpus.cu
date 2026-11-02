@@ -36,6 +36,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 #include <link.h>
 #include <sched.h>
 #include <unistd.h>
@@ -151,19 +152,31 @@ int main()
     if (ndev == 0)
         return 2;
 
+    // y = 2 x on x = 1, so the last element is 2.0 only if every block ran.
     const int n = 1 << 20;
-    double *x = nullptr, *y = nullptr, y0 = 0;
-    cudaMalloc(&x, n * sizeof(double));
-    cudaMalloc(&y, n * sizeof(double));
-    cudaMemset(x, 0, n * sizeof(double));
-    cudaMemset(y, 0, n * sizeof(double));
-    axpy<<<(n + 255) / 256, 256>>>(n, 2.0, x, y);
-    cudaError_t k = cudaDeviceSynchronize();
+    std::vector<double> ones(n, 1.0);
+    double *x = nullptr, *y = nullptr, y_last = 0;
+    cudaError_t k = cudaMalloc(&x, n * sizeof(double));
     if (k == cudaSuccess)
-        k = cudaMemcpy(&y0, y, sizeof y0, cudaMemcpyDeviceToHost);
+        k = cudaMalloc(&y, n * sizeof(double));
+    if (k == cudaSuccess)
+        k = cudaMemcpy(x, ones.data(), n * sizeof(double), cudaMemcpyHostToDevice);
+    if (k == cudaSuccess)
+        k = cudaMemset(y, 0, n * sizeof(double));
+    if (k == cudaSuccess) {
+        axpy<<<(n + 255) / 256, 256>>>(n, 2.0, x, y);
+        // A launch can fail at once -- no machine code for this device, say --
+        // without queueing anything, and the synchronize after it then succeeds.
+        k = cudaGetLastError();
+    }
+    if (k == cudaSuccess)
+        k = cudaDeviceSynchronize();
+    if (k == cudaSuccess)
+        k = cudaMemcpy(&y_last, y + n - 1, sizeof y_last, cudaMemcpyDeviceToHost);
     cudaFree(x);
     cudaFree(y);
+    const bool ok = k == cudaSuccess && y_last == 2.0;
     printf("report_gpus: host=%s rank=%s kernel=%s\n", host, rank,
-           k == cudaSuccess ? "ok" : cudaGetErrorString(k));
-    return k == cudaSuccess ? 0 : 3;
+           ok ? "ok" : k != cudaSuccess ? cudaGetErrorString(k) : "wrong result");
+    return ok ? 0 : 3;
 }
